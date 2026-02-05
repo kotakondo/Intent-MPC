@@ -56,7 +56,11 @@ namespace onboardDetector{
 			this->mocapSub_ = this->nh_.subscribe("/mocap/model_states",10, &fakeDetector::posCB, this);
 		}
 		else{
-			this->gazeboSub_ = this->nh_.subscribe("/gazebo/model_states", 10, &fakeDetector::stateCB, this);
+			// Read model_states topic from parameter (default: /gazebo/model_states)
+			std::string modelStatesTopic;
+			this->nh_.param<std::string>("model_states_topic", modelStatesTopic, "/gazebo/model_states");
+			std::cout << "[Fake Detector]: Subscribing to model states: " << modelStatesTopic << std::endl;
+			this->gazeboSub_ = this->nh_.subscribe(modelStatesTopic, 10, &fakeDetector::stateCB, this);
 		}
 
 		this->odomSub_ = this->nh_.subscribe(odomTopicName, 10, &fakeDetector::odomCB, this);
@@ -205,19 +209,41 @@ namespace onboardDetector{
 				}
 			}
 			// 2. get size (gazebo name contains size):
+			// Format: "obstacle_dXXX_YYY_ZZZ" (21 chars) or "obstacleXXXYYYZZZ" (17+ chars)
 			double xsize, ysize, zsize;
-			int xsizeStartIdx = name.size() - 1 - 1 - 3 * 3;
-			std::string xsizeStr = name.substr(xsizeStartIdx, 3);
-			xsize = std::stod(xsizeStr);
 
-			int ysizeStartIdx = name.size() - 1 - 3 * 2;
-			std::string ysizeStr = name.substr(ysizeStartIdx, 3);
-			ysize = std::stod(ysizeStr);
+			// Check if new DYNUS format with underscores (obstacle_d080_080_080)
+			if (name.size() == 21 && name.find("obstacle_d") == 0) {
+				// New format: obstacle_dXXX_YYY_ZZZ
+				// "obstacle_d" = 10 chars, then "040_400_040" = 11 chars
+				std::string xsizeStr = name.substr(10, 3);  // Positions 10-12: first 3 digits
+				std::string ysizeStr = name.substr(14, 3);  // Positions 14-16: after first "_"
+				std::string zsizeStr = name.substr(18, 3);  // Positions 18-20: after second "_"
+				xsize = std::stod(xsizeStr) / 100.0;  // Convert cm to m
+				ysize = std::stod(ysizeStr) / 100.0;
+				zsize = std::stod(zsizeStr) / 100.0;
+			}
+			// Old format without underscores (obstacle080080080)
+			else if (name.size() >= 17) {
+				int xsizeStartIdx = name.size() - 1 - 1 - 3 * 3;
+				std::string xsizeStr = name.substr(xsizeStartIdx, 3);
+				xsize = std::stod(xsizeStr);
 
-			int zsizeStartIdx = name.size() - 3;
-			std::string zsizeStr = name.substr(zsizeStartIdx, 3);
-			zsize = std::stod(zsizeStr);
-			
+				int ysizeStartIdx = name.size() - 1 - 3 * 2;
+				std::string ysizeStr = name.substr(ysizeStartIdx, 3);
+				ysize = std::stod(ysizeStr);
+
+				int zsizeStartIdx = name.size() - 3;
+				std::string zsizeStr = name.substr(zsizeStartIdx, 3);
+				zsize = std::stod(zsizeStr);
+			}
+			else {
+				// Fallback to default size
+				xsize = 0.8;
+				ysize = 0.8;
+				zsize = 0.8;
+			}
+
 			ob.x_width = xsize;
 			ob.y_width = ysize;
 			ob.z_width = zsize;

@@ -1,16 +1,16 @@
 simulation: true
 use_fake_detector: true
 use_predictor: true
-takeoff_height: 1.0 # m
+takeoff_height: 3.0 # m - for dynamic obstacles (was 1.0 for original demo)
 use_global_planner: false
 no_yaw_turning: false
 use_yaw_control: true
-desired_velocity: 1.5 # m/s
-desired_acceleration: 1.5 # m/s^2
+desired_velocity: 2.0 # m/s (increased from 1.5 for faster navigation)
+desired_acceleration: 2.0 # m/s^2 (increased from 1.5 for more aggressive maneuvers)
 desired_angular_velocity: 0.5 # rad/s
 
 # MPC target parameters
 use_predefined_goal: true
-predefined_goal_directory: "/cfg/mpc_navigation/ref_trajectory.txt"
-execute_path_times: 10 # how many times to repeat the trajectory 
+predefined_goal_directory: "/cfg/mpc_navigation/ref_trajectory_straight_line.txt"  # straight line for dynamic obstacles
+execute_path_times: 1 # execute once (was 10 for circular demo) 
 

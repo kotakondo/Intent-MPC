@@ -1,0 +1,45 @@
+# TMUXP configuration for Intent-MPC simulation
+# Automates the launch of the full simulation stack
+# Usage: tmuxp load /root/ip-mpc_ws/Intent-MPC/docker/intent_mpc_sim.yml
+
+session_name: intent-mpc
+
+windows:
+  - window_name: simulator
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+      - source /root/ip-mpc_ws/src/acl-gazebo/uav_simulator/gazeboSetup.bash
+    panes:
+      - shell_command:
+          - roscore
+      - shell_command:
+          - sleep 3
+          - roslaunch uav_simulator start.launch
+
+  - window_name: intent-mpc
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - shell_command:
+          - sleep 6
+          - roslaunch autonomous_flight intent_mpc_demo.launch
+
+  - window_name: monitor
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - shell_command:
+          - sleep 8
+          - echo "Monitoring goal_reached topic..."
+          - rostopic echo /goal_reached
+      - shell_command:
+          - echo "Available commands:"
+          - echo "  rostopic list - List all topics"
+          - echo "  rostopic echo /topic_name - Monitor a topic"
+          - echo "  rosnode list - List all nodes"
+          - echo ""
+          - echo "Press Ctrl+b then arrow keys to navigate panes"

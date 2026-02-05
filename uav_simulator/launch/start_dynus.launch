@@ -1,0 +1,69 @@
+<launch>
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="debug" default="false"/>
+  <arg name="gui" default="false"/>  <!-- Disable Gazebo GUI by default -->
+  <arg name="headless" default="false"/>
+
+  <!-- DYNUS Obstacle Parameters -->
+  <arg name="num_obstacles" default="200"/>  <!-- Increased default -->
+  <arg name="dynamic_ratio" default="0.7"/>
+  <arg name="seed" default="0"/>
+
+  <!-- Empty world (obstacles come from DYNUS, not Gazebo) -->
+  <arg name="world_name" value="$(find uav_simulator)/worlds/test/empty.world"/>
+
+  <!-- Launch Gazebo (headless, no GUI) -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="debug" value="$(arg debug)"/>
+    <arg name="gui" value="$(arg gui)"/>
+    <arg name="headless" value="$(arg headless)"/>
+  </include>
+
+  <!-- Load quadcopter URDF (no camera - using fake_detector instead) -->
+  <param name="robot_description" command="cat '$(find uav_simulator)/urdf/quadcopter_no_camera.urdf'"/>
+
+  <!-- Spawn quadcopter on ground -->
+  <node name="spawn_gazebo_model" pkg="gazebo_ros" type="spawn_model"
+        args="-urdf -param robot_description -model quadcopter
+              -x 0.0 -y 0.0 -z 0.1 -Y 0.0"
+        respawn="false"/>
+
+  <!-- Throttle ground truth topics -->
+  <node pkg="topic_tools" type="throttle" name="gt_pose_throttle"
+        args="messages /CERLAB/quadcopter/pose_raw 30 /CERLAB/quadcopter/pose"/>
+  <node pkg="topic_tools" type="throttle" name="gt_vel_throttle"
+        args="messages /CERLAB/quadcopter/vel_raw 30 /CERLAB/quadcopter/vel"/>
+  <node pkg="topic_tools" type="throttle" name="gt_acc_throttle"
+        args="messages /CERLAB/quadcopter/acc_raw 30 /CERLAB/quadcopter/acc"/>
+  <node pkg="topic_tools" type="throttle" name="gt_odom_throttle"
+        args="messages /CERLAB/quadcopter/odom_raw 30 /CERLAB/quadcopter/odom"/>
+
+  <!-- TF setup -->
+  <include file="$(find uav_simulator)/launch/setupTF.launch">
+    <arg name="pose_topic" value="/CERLAB/quadcopter/pose"/>
+  </include>
+
+  <!-- DYNUS Obstacles (publishes to /gazebo/model_states) -->
+  <node pkg="dynus_obstacles_ros1" type="dynus_obstacles_node" name="dynus_obstacles" output="screen">
+    <param name="num_obstacles" value="$(arg num_obstacles)"/>
+    <param name="dynamic_ratio" value="$(arg dynamic_ratio)"/>
+    <param name="seed" value="$(arg seed)"/>
+    <param name="publish_rate_hz" value="50.0"/>
+    <param name="publish_markers" value="true"/>
+    <param name="x_min" value="0.0"/>
+    <param name="x_max" value="100.0"/>
+    <param name="y_min" value="-7.0"/>
+    <param name="y_max" value="7.0"/>
+    <param name="z_min" value="0.5"/>
+    <param name="z_max" value="4.5"/>
+    <param name="slower_min" value="4.0"/>
+    <param name="slower_max" value="6.0"/>
+  </node>
+
+  <!-- Keyboard control disabled (was causing popup window) -->
+  <!-- <node name="keyboard_control" pkg="uav_simulator" type="keyboard_control"/> -->
+</launch>

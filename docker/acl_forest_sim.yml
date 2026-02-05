@@ -1,0 +1,33 @@
+# TMUXP configuration for Intent-MPC with ACL hard_forest
+# Automates the launch of ACL hard_forest simulation with straight-line navigation
+# Usage: tmuxp load /root/ip-mpc_ws/Intent-MPC/docker/acl_forest_sim.yml
+
+session_name: intent-mpc-acl-forest
+
+windows:
+  - window_name: simulator
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+      - source /root/ip-mpc_ws/src/Intent-MPC/uav_simulator/gazeboSetup.bash
+    panes:
+      - roscore
+      - sleep 3 && echo "Launching ACL hard_forest..." && roslaunch uav_simulator start_acl_forest.launch
+
+  - window_name: intent-mpc
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 8 && echo "Launching Intent-MPC navigation..." && roslaunch autonomous_flight intent_mpc_demo.launch
+
+  - window_name: monitor
+    layout: even-horizontal
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 10 && echo "=== Drone Position ===" && rostopic echo /CERLAB/quadcopter/pose --noarr
+      - sleep 10 && echo "=== Depth Camera Rate ===" && rostopic hz /camera/depth/image_raw
+      - sleep 10 && echo "=== Commands: rostopic list | rostopic echo /topic | Ctrl+b arrows to navigate ==="

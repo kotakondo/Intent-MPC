@@ -1,0 +1,33 @@
+# TMUXP configuration for Intent-MPC with DYNUS obstacles
+# Split launch: Gazebo first, then navigation nodes
+# Usage: tmuxp load /root/ip-mpc_ws/src/Intent-MPC/docker/dynus_sim.yml
+
+session_name: intent-mpc-dynus
+
+windows:
+  - window_name: simulator
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+      - source /root/ip-mpc_ws/src/Intent-MPC/uav_simulator/gazeboSetup.bash
+    panes:
+      - roscore
+      - sleep 3 && echo "Launching Gazebo + DYNUS obstacles (headless)..." && roslaunch uav_simulator start_dynus.launch num_obstacles:=${NUM_OBSTACLES:-200} dynamic_ratio:=${DYNAMIC_RATIO:-0.7} seed:=${SEED:-0} gui:=false
+
+  - window_name: intent-mpc
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 8 && echo "Sending takeoff command..." && rostopic pub -1 /CERLAB/quadcopter/takeoff std_msgs/Empty && echo "Launching Intent-MPC navigation..." && roslaunch autonomous_flight intent_mpc_dynus_nav.launch
+
+  - window_name: monitor
+    layout: even-horizontal
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 10 && echo "=== Monitoring Drone Position ===" && watch -n 0.5 'rostopic echo /CERLAB/quadcopter/odom/pose/pose/position -n 1'
+      - sleep 10 && echo "=== Obstacle Count ===" && rostopic echo /gazebo/model_states/name
+      - sleep 10 && echo "=== MPC Status ===" && rostopic hz /mpcNavigation/mpc_trajectory

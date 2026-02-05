@@ -1,0 +1,46 @@
+<launch>
+  <!-- DYNUS Obstacle Parameters -->
+  <arg name="num_obstacles" default="30"/>
+  <arg name="dynamic_ratio" default="0.7"/>
+  <arg name="seed" default="0"/>
+  <arg name="publish_rate_hz" default="50.0"/>
+  <arg name="publish_markers" default="true"/>
+
+  <!-- Spatial range (DYNUS configuration - tighter corridor) -->
+  <arg name="x_min" default="0.0"/>
+  <arg name="x_max" default="100.0"/>
+  <arg name="y_min" default="-7.0"/>
+  <arg name="y_max" default="7.0"/>
+  <arg name="z_min" default="0.5"/>
+  <arg name="z_max" default="4.5"/>
+
+  <!-- Trajectory parameters -->
+  <arg name="slower_min" default="4.0"/>
+  <arg name="slower_max" default="6.0"/>
+
+  <!-- DYNUS Obstacles Node -->
+  <node pkg="dynus_obstacles_ros1" type="dynus_obstacles_node" name="dynus_obstacles" output="screen">
+    <param name="num_obstacles" value="$(arg num_obstacles)"/>
+    <param name="dynamic_ratio" value="$(arg dynamic_ratio)"/>
+    <param name="seed" value="$(arg seed)"/>
+    <param name="publish_rate_hz" value="$(arg publish_rate_hz)"/>
+    <param name="publish_markers" value="$(arg publish_markers)"/>
+
+    <param name="x_min" value="$(arg x_min)"/>
+    <param name="x_max" value="$(arg x_max)"/>
+    <param name="y_min" value="$(arg y_min)"/>
+    <param name="y_max" value="$(arg y_max)"/>
+    <param name="z_min" value="$(arg z_min)"/>
+    <param name="z_max" value="$(arg z_max)"/>
+
+    <param name="slower_min" value="$(arg slower_min)"/>
+    <param name="slower_max" value="$(arg slower_max)"/>
+  </node>
+
+  <!-- Fake Odometry Node (Perfect Ground Truth) -->
+  <node pkg="dynus_obstacles_ros1" type="fake_odom_node" name="fake_odom" output="screen">
+    <param name="trajectory_file" value="/cfg/mpc_navigation/ref_trajectory_straight_line.txt"/>
+    <param name="publish_rate" value="100.0"/>
+    <param name="velocity" value="1.5"/>
+  </node>
+</launch>

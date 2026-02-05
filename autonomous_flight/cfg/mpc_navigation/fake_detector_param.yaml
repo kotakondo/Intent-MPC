@@ -1,6 +1,9 @@
 # this is only used in simulation
 color_distance: 4.0
-target_obstacle: ["person", "dynamic_box", "dynamic_cylinder"]
-# odom_topic: "mavros/local_position/odom"
+# Track all DYNUS obstacles using prefix matching
+# fake_detector matches any model name that STARTS with these prefixes
+target_obstacle: ["obstacle"]
+# Use DYNUS topic instead of Gazebo's (Gazebo floods /gazebo/model_states with empty messages)
+model_states_topic: "/dynus/model_states"
 odom_topic: "/CERLAB/quadcopter/odom"
 history_size: 100

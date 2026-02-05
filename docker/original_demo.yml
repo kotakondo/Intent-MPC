@@ -1,0 +1,33 @@
+# TMUXP configuration for original Intent-MPC demo
+# Circular trajectory in generated_env.world
+# Usage: tmuxp load /root/ip-mpc_ws/Intent-MPC/docker/original_demo.yml
+
+session_name: intent-mpc-original
+
+windows:
+  - window_name: simulator
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+      - source /root/ip-mpc_ws/src/Intent-MPC/uav_simulator/gazeboSetup.bash
+    panes:
+      - roscore
+      - sleep 3 && echo "Launching original demo environment..." && roslaunch uav_simulator start.launch
+
+  - window_name: intent-mpc
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 8 && echo "Launching Intent-MPC navigation (circular trajectory)..." && roslaunch autonomous_flight intent_mpc_demo.launch
+
+  - window_name: monitor
+    layout: even-horizontal
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 10 && echo "=== Monitoring Drone ===" && rostopic echo /CERLAB/quadcopter/pose --noarr
+      - sleep 10 && echo "=== Topic Rates ===" && rostopic hz /camera/depth/image_raw
+      - sleep 10 && echo "=== Use Ctrl+b arrows to navigate ==="

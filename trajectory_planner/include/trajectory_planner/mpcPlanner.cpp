@@ -142,7 +142,9 @@ namespace trajPlanner{
 
 	void mpcPlanner::registerCallback(){
 		this->visTimer_ = this->nh_.createTimer(ros::Duration(0.05), &mpcPlanner::visCB, this);
-		this->clusteringTimer_ = this->nh_.createTimer(ros::Duration(0.05), &mpcPlanner::staticObstacleClusteringCB, this);
+		// Disable static clustering since DYNUS uses virtual obstacles (no physical models)
+		// All obstacles handled by fake_detector through dynamic obstacle path
+		// this->clusteringTimer_ = this->nh_.createTimer(ros::Duration(0.05), &mpcPlanner::staticObstacleClusteringCB, this);
 	}
 
 	void mpcPlanner::setMap(const std::shared_ptr<mapManager::occMap>& map){
@@ -1233,7 +1235,8 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 		this->publishCandidateTrajectory();
 		this->publishHistoricTrajectory();
 		this->publishLocalCloud();
-		this->publishStaticObstacles();
+		// Static clustering disabled - all obstacles handled by fake_detector
+		// this->publishStaticObstacles();
 		this->publishDynamicObstacles();
 	}
 

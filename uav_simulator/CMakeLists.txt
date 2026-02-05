@@ -159,7 +159,8 @@ add_library(quadcopterPlugin SHARED
 
 add_library(obstaclePathPlugin src/obstaclePathPlugin.cc)
 
-add_library(livox_laser SHARED src/livox_lidar/livox_points_plugin.cpp src/livox_lidar/livox_ode_multiray_shape.cpp)
+# Livox lidar disabled - missing message dependencies
+# add_library(livox_laser SHARED src/livox_lidar/livox_points_plugin.cpp src/livox_lidar/livox_ode_multiray_shape.cpp)
 
 # add_library(livox_laser_gpu SHARED src/livox_lidar/livox_gpu_points_plugin.cpp)
 
@@ -195,16 +196,17 @@ set_target_properties(quadcopterPlugin
 )
 
 set_target_properties(obstaclePathPlugin
-    PROPERTIES 
+    PROPERTIES
     LIBRARY_OUTPUT_DIRECTORY
     ${PROJECT_SOURCE_DIR}/plugins
 )
 
-set_target_properties(livox_laser
-    PROPERTIES 
-    LIBRARY_OUTPUT_DIRECTORY
-    ${PROJECT_SOURCE_DIR}/plugins
-)
+# Livox lidar disabled
+# set_target_properties(livox_laser
+#     PROPERTIES
+#     LIBRARY_OUTPUT_DIRECTORY
+#     ${PROJECT_SOURCE_DIR}/plugins
+# )
 
 # set_target_properties(livox_laser_gpu
 #     PROPERTIES 
@@ -233,12 +235,13 @@ target_link_libraries(keyboard_control
 
 target_link_libraries(quadcopterTFBroadcaster ${catkin_LIBRARIES})
 
-target_link_libraries(obstaclePathPlugin    
+target_link_libraries(obstaclePathPlugin
    ${catkin_LIBRARIES}
    ${GAZEBO_LIBRARIES}
 )
 
-target_link_libraries(livox_laser ${catkin_LIBRARIES} RayPlugin libprotobuf.so.9)
+# Livox lidar disabled
+# target_link_libraries(livox_laser ${catkin_LIBRARIES} RayPlugin libprotobuf.so.9)
 
 # target_link_libraries(livox_laser_gpu ${catkin_LIBRARIES} GpuRayPlugin)
 

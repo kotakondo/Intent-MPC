@@ -323,24 +323,23 @@ namespace AutoFlight{
 					
 					if (newTrajReturn){
 						this->trajStartTime_ = trajStartTime;
+						// Trust MPC planner - it already handles obstacle avoidance
+						this->mpc_->getTrajectory(mpcTraj);
+						this->mpcTrajMsg_ = mpcTraj;
+						this->mpcTrajectoryReady_ = true;
+						this->mpcFirstTime_ = false;
+
+						// Optional: Log collisions for monitoring
 						if (this->mpcHasCollision() or this->hasDynamicCollision()){
-							this->mpcTrajectoryReady_ = false;
-							this->stop();
-						}
-						else{
-							this->mpc_->getTrajectory(mpcTraj);
-							this->mpcTrajMsg_ = mpcTraj;
-							this->mpcTrajectoryReady_ = true;
-							this->mpcFirstTime_ = false;
+							cout << "[AutoFlight]: Collision in plan, but executing (MPC handles avoidance)." << endl;
 						}
 					}
 					else if (not this->mpcFirstTime_){
+						// Continue with previous MPC trajectory
+						this->mpcTrajectoryReady_ = true;
+
 						if (this->mpcHasCollision() or this->hasDynamicCollision()){
-							this->mpcTrajectoryReady_ = false;
-							this->stop();
-						}
-						else{
-							this->mpcTrajectoryReady_ = true;
+							cout << "[AutoFlight]: Collision detected, continuing with MPC." << endl;
 						}
 					}
 					else{
@@ -399,12 +398,11 @@ namespace AutoFlight{
 		if (this->mpcTrajectoryReady_){
 			if (this->usePredefinedGoal_){
 				ros::Time currTime = ros::Time::now();
-				if (this->mpcHasCollision() or this->hasDynamicCollision()){ 
-					this->stop();
-					this->mpcTrajectoryReady_ = false;
+				// MPC handles collision avoidance - don't stop execution
+				if (this->mpcHasCollision() or this->hasDynamicCollision()){
+					// Just log and request replan, but keep executing current trajectory
 					this->mpcReplan_ = true;
-					cout << "[AutoFlight]: Collision detected. MPC replan." << endl;
-					return;
+					cout << "[AutoFlight]: Collision in trajectory. MPC will replan while executing." << endl;
 				}
 				else if (AutoFlight::getPoseDistance(this->odom_.pose.pose, this->goal_.pose) <= 0.3 and 
 					(currTime-this->trackingStartTime_ ).toSec() >= 3){

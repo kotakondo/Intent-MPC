@@ -1,0 +1,25 @@
+# TMUXP configuration for Intent-MPC with dynamic obstacles
+# No Gazebo - uses ground truth odometry and dynamic obstacle generation (ported from DYNUS)
+# Usage: tmuxp load /root/ip-mpc_ws/src/Intent-MPC/docker/dynamic_sim.yml
+
+session_name: intent-mpc-dynamic
+
+windows:
+  - window_name: simulation
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - roscore
+      - sleep 3 && echo "Launching Intent-MPC with dynamic obstacles..." && roslaunch autonomous_flight intent_mpc_dynus_sim.launch
+
+  - window_name: monitor
+    layout: even-horizontal
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+    panes:
+      - sleep 5 && echo "=== Drone Position ===" && rostopic echo /CERLAB/quadcopter/odom --noarr
+      - sleep 5 && echo "=== Obstacle States ===" && rostopic hz /gazebo/model_states
+      - sleep 5 && echo "=== Commands ===" && echo "rostopic list | grep -E 'odom|model|mpc'"

@@ -1,0 +1,86 @@
+<launch>
+  <!-- Simulation Parameters -->
+  <arg name="num_obstacles" default="10"/>
+  <arg name="dynamic_ratio" default="0.5"/>
+  <arg name="seed" default="0"/>
+  <arg name="paused" default="false"/>
+  <arg name="use_sim_time" default="true"/>
+  <arg name="debug" default="false"/>
+
+  <!-- Empty world (no obstacles in world file, they come from DYNUS) -->
+  <arg name="world_name" value="$(find uav_simulator)/worlds/test/empty.world"/>
+
+  <!-- Launch Gazebo with empty world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="debug" value="$(arg debug)"/>
+  </include>
+
+  <!-- Load quadcopter URDF to parameter server -->
+  <param name="robot_description" command="cat '$(find uav_simulator)/urdf/quadcopter.urdf'" />
+
+  <!-- Spawn quadcopter on ground at (0, 0, 0.1) -->
+  <node name="spawn_gazebo_model" pkg="gazebo_ros" type="spawn_model"
+        args="-urdf -param robot_description -model quadcopter
+              -x 0.0 -y 0.0 -z 0.1 -Y 0.0"
+        respawn="false"/>
+
+  <!-- Throttle ground truth topics from Gazebo plugin -->
+  <node pkg="topic_tools" type="throttle" name="gt_pose_throttle"
+        args="messages /CERLAB/quadcopter/pose_raw 30 /CERLAB/quadcopter/pose"/>
+  <node pkg="topic_tools" type="throttle" name="gt_vel_throttle"
+        args="messages /CERLAB/quadcopter/vel_raw 30 /CERLAB/quadcopter/vel"/>
+  <node pkg="topic_tools" type="throttle" name="gt_acc_throttle"
+        args="messages /CERLAB/quadcopter/acc_raw 30 /CERLAB/quadcopter/acc"/>
+  <node pkg="topic_tools" type="throttle" name="gt_odom_throttle"
+        args="messages /CERLAB/quadcopter/odom_raw 30 /CERLAB/quadcopter/odom"/>
+
+  <!-- TF setup -->
+  <include file="$(find uav_simulator)/launch/setupTF.launch">
+    <arg name="pose_topic" value="/CERLAB/quadcopter/pose"/>
+  </include>
+
+  <!-- DYNUS Obstacles -->
+  <node pkg="dynus_obstacles_ros1" type="dynus_obstacles_node" name="dynus_obstacles" output="screen">
+    <param name="num_obstacles" value="$(arg num_obstacles)"/>
+    <param name="dynamic_ratio" value="$(arg dynamic_ratio)"/>
+    <param name="seed" value="$(arg seed)"/>
+    <param name="publish_rate_hz" value="50.0"/>
+    <param name="publish_markers" value="true"/>
+    <param name="x_min" value="0.0"/>
+    <param name="x_max" value="100.0"/>
+    <param name="y_min" value="-7.0"/>
+    <param name="y_max" value="7.0"/>
+    <param name="z_min" value="0.5"/>
+    <param name="z_max" value="4.5"/>
+    <param name="slower_min" value="4.0"/>
+    <param name="slower_max" value="6.0"/>
+  </node>
+
+  <!-- Intent-MPC Parameters -->
+  <rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/fake_detector_param.yaml"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/flight_base.yaml" ns="autonomous_flight"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/planner_param.yaml"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/mapping_param.yaml" ns="/dynamic_map"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/dynamic_detector_param.yaml" ns="/onboard_detector"/>
+  <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/predictor_param.yaml" ns="/dynamic_predictor"/>
+
+  <!-- Intent-MPC Nodes -->
+  <node pkg="tracking_controller" type="tracking_controller_node" name="tracking_controller_node" output="screen"/>
+
+  <!-- Send takeoff command to transition Gazebo plugin from LANDED to TAKINGOFF/FLYING state -->
+  <!-- This must happen BEFORE mpc_navigation sends position targets -->
+  <node pkg="rostopic" type="rostopic" name="send_takeoff_command"
+        args="pub -1 /CERLAB/quadcopter/takeoff std_msgs/Empty"
+        launch-prefix="bash -c 'sleep 2; $0 $@'"/>
+
+  <!-- Start mpc_navigation after Gazebo is ready and takeoff command sent -->
+  <node pkg="autonomous_flight" type="mpc_navigation_node" name="mpc_navigation_node" output="screen"
+        launch-prefix="bash -c 'sleep 3; $0 $@'"/>
+
+  <!-- RViz -->
+  <include file="$(find remote_control)/launch/mpc_navigation_rviz.launch"/>
+</launch>

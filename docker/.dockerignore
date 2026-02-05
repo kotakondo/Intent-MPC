@@ -1,0 +1,31 @@
+# Docker ignore file for Intent-MPC
+# Excludes unnecessary files from Docker build context
+
+# Git directories
+.git
+.gitignore
+.gitmodules
+
+# Build artifacts
+build/
+devel/
+logs/
+.catkin_workspace
+*.pyc
+__pycache__/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+docs/
+
+# Docker files (no need to copy into image)
+docker/
+Dockerfile
+.dockerignore
