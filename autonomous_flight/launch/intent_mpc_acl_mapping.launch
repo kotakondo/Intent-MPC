@@ -1,17 +1,5 @@
 <launch>
-  <!-- Simulation Parameters (MATCHED TO DYNUS BENCHMARK) -->
-  <arg name="num_obstacles" default="200"/>
-  <arg name="dynamic_ratio" default="0.65"/>
-  <arg name="seed" default="0"/>
-
-  <!-- DYNUS Obstacles + Fake Odometry -->
-  <include file="$(find dynus_obstacles_ros1)/launch/dynus_obstacles.launch">
-    <arg name="num_obstacles" value="$(arg num_obstacles)"/>
-    <arg name="dynamic_ratio" value="$(arg dynamic_ratio)"/>
-    <arg name="seed" value="$(arg seed)"/>
-  </include>
-
-  <!-- Intent-MPC Parameters -->
+  <!-- Original Intent-MPC parameters -->
   <rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/fake_detector_param.yaml" />
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/flight_base.yaml" ns="autonomous_flight"/>
@@ -20,9 +8,18 @@
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/dynamic_detector_param.yaml" ns="/onboard_detector" />
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/predictor_param.yaml" ns="/dynamic_predictor" />
 
-  <!-- Intent-MPC Nodes -->
+  <!-- Original Intent-MPC nodes -->
   <node pkg="tracking_controller" type="tracking_controller_node" name="tracking_controller_node" output="screen" />
   <node pkg="autonomous_flight" type="mpc_navigation_node" name="mpc_navigation_node" output="screen" />
 
-  <!-- RViz disabled for headless testing -->
+  <!-- ACL global_mapper_ros (running in parallel for comparison) -->
+  <include file="$(find global_mapper_ros)/launch/global_mapper_node.launch">
+    <arg name="quad" value="CERLAB"/>
+    <arg name="depth_image_topic" value="/camera/depth/image_raw"/>
+    <arg name="odom_topic" value="/CERLAB/quadcopter/odom"/>
+    <arg name="param_file" value="acl_mapper_cerlab.yaml"/>
+  </include>
+
+  <!-- RViz -->
+  <include file="$(find remote_control)/launch/mpc_navigation_rviz.launch" />
 </launch>

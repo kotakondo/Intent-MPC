@@ -1,16 +1,16 @@
 simulation: true
 use_fake_detector: true
 use_predictor: true
-takeoff_height: 3.0 # m - for dynamic obstacles (was 1.0 for original demo)
+takeoff_height: 2.0 # m - DYNUS benchmark height (was 3.0)
 use_global_planner: false
 no_yaw_turning: false
 use_yaw_control: true
-desired_velocity: 2.0 # m/s (increased from 1.5 for faster navigation)
-desired_acceleration: 2.0 # m/s^2 (increased from 1.5 for more aggressive maneuvers)
-desired_angular_velocity: 0.5 # rad/s
+desired_velocity: 1.0 # m/s - DYNUS benchmark constraint (was 2.0)
+desired_acceleration: 2.0 # m/s^2 - DYNUS benchmark constraint (was 2.0)
+desired_angular_velocity: 1.0 # rad/s - DYNUS benchmark constraint (was 0.5)
 
 # MPC target parameters
 use_predefined_goal: true
-predefined_goal_directory: "/cfg/mpc_navigation/ref_trajectory_straight_line.txt"  # straight line for dynamic obstacles
+predefined_goal_directory: "/cfg/mpc_navigation/ref_trajectory_dynus_benchmark.txt"  # DYNUS benchmark trajectory (0,0,2)->(105,0,2)
 execute_path_times: 1 # execute once (was 10 for circular demo) 
 

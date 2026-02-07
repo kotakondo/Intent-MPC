@@ -170,6 +170,7 @@ namespace AutoFlight{
 		this->mpcTrajPub_ = this->nh_.advertise<nav_msgs::Path>("mpcNavigation/mpc_trajectory", 10);
 		this->inputTrajPub_ = this->nh_.advertise<nav_msgs::Path>("mpcNavigation/input_trajectory", 10);
 		this->goalPub_ = this->nh_.advertise<visualization_msgs::MarkerArray>("mpcNavigation/goal", 10);
+		this->mpcComputeTimePub_ = this->nh_.advertise<std_msgs::Float64>("mpcNavigation/mpc_compute_time", 10);
 	}
 
 	void mpcNavigation::registerCallback(){
@@ -319,8 +320,16 @@ namespace AutoFlight{
 					else{
 						newTrajReturn = this->mpc_->makePlan();
 					}
-					nav_msgs::Path mpcTraj;	
-					
+					ros::Time mpcEndTime = ros::Time::now();
+					double mpcComputeTime = (mpcEndTime - trajStartTime).toSec();
+
+					// Publish MPC computation time
+					std_msgs::Float64 computeTimeMsg;
+					computeTimeMsg.data = mpcComputeTime;
+					this->mpcComputeTimePub_.publish(computeTimeMsg);
+
+					nav_msgs::Path mpcTraj;
+
 					if (newTrajReturn){
 						this->trajStartTime_ = trajStartTime;
 						// Trust MPC planner - it already handles obstacle avoidance

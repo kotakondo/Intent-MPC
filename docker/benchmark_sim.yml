@@ -1,0 +1,15 @@
+# TMUXP configuration for Intent-MPC Benchmark
+# Runs benchmark trials with data collection
+# Usage: tmuxp load /root/ip-mpc_ws/src/Intent-MPC/docker/benchmark_sim.yml
+
+session_name: intent-mpc-benchmark
+
+windows:
+  - window_name: benchmark
+    layout: even-vertical
+    shell_command_before:
+      - source /opt/ros/noetic/setup.bash
+      - source /root/ip-mpc_ws/devel/setup.bash
+      - source /root/ip-mpc_ws/src/Intent-MPC/uav_simulator/gazeboSetup.bash
+    panes:
+      - echo "Starting Intent-MPC Benchmark..." && sleep 2 && python3 /root/ip-mpc_ws/src/Intent-MPC/scripts/run_mpc_benchmark.py --num-trials ${NUM_TRIALS:-20} --num-obstacles ${NUM_OBSTACLES:-200} --dynamic-ratio ${DYNAMIC_RATIO:-0.65} --seed-start ${SEED_START:-0} --timeout ${TIMEOUT:-120} ${VISUALIZE:+--visualize}

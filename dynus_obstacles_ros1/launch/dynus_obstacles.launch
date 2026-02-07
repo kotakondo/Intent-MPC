@@ -1,22 +1,22 @@
 <launch>
-  <!-- DYNUS Obstacle Parameters -->
-  <arg name="num_obstacles" default="30"/>
-  <arg name="dynamic_ratio" default="0.7"/>
+  <!-- DYNUS Obstacle Parameters (MATCHED TO DYNUS BENCHMARK) -->
+  <arg name="num_obstacles" default="200"/>
+  <arg name="dynamic_ratio" default="0.65"/>
   <arg name="seed" default="0"/>
   <arg name="publish_rate_hz" default="50.0"/>
   <arg name="publish_markers" default="true"/>
 
-  <!-- Spatial range (DYNUS configuration - tighter corridor) -->
-  <arg name="x_min" default="0.0"/>
-  <arg name="x_max" default="100.0"/>
-  <arg name="y_min" default="-7.0"/>
-  <arg name="y_max" default="7.0"/>
-  <arg name="z_min" default="0.5"/>
-  <arg name="z_max" default="4.5"/>
+  <!-- Spatial range (EXACT DYNUS BENCHMARK CONFIGURATION) -->
+  <arg name="x_min" default="5.0"/>
+  <arg name="x_max" default="105.0"/>
+  <arg name="y_min" default="-15.0"/>
+  <arg name="y_max" default="15.0"/>
+  <arg name="z_min" default="0.0"/>
+  <arg name="z_max" default="6.0"/>
 
-  <!-- Trajectory parameters -->
-  <arg name="slower_min" default="4.0"/>
-  <arg name="slower_max" default="6.0"/>
+  <!-- Trajectory parameters (MATCHED TO DYNUS BENCHMARK) -->
+  <arg name="slower_min" default="10.0"/>
+  <arg name="slower_max" default="12.0"/>
 
   <!-- DYNUS Obstacles Node -->
   <node pkg="dynus_obstacles_ros1" type="dynus_obstacles_node" name="dynus_obstacles" output="screen">
@@ -37,10 +37,8 @@
     <param name="slower_max" value="$(arg slower_max)"/>
   </node>
 
-  <!-- Fake Odometry Node (Perfect Ground Truth) -->
-  <node pkg="dynus_obstacles_ros1" type="fake_odom_node" name="fake_odom" output="screen">
-    <param name="trajectory_file" value="/cfg/mpc_navigation/ref_trajectory_straight_line.txt"/>
-    <param name="publish_rate" value="100.0"/>
-    <param name="velocity" value="1.5"/>
-  </node>
+  <!-- NOTE: fake_odom_node REMOVED - it was overwriting Gazebo's actual drone position!
+       The fake_odom_node publishes to /CERLAB/quadcopter/odom which conflicts with Gazebo.
+       Only use fake_odom_node for testing without Gazebo simulation. -->
+
 </launch>

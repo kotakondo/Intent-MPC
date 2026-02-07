@@ -1,0 +1,51 @@
+<launch>
+  <arg name="paused" value="false"/>
+  <arg name="verbose" value="false"/>
+  <arg name="use_sim_time" value="true"/>
+  <arg name="debug" value="false" />
+  <arg name="lidar" value="false" />
+
+  <!-- ACL hard_forest world -->
+  <arg name="world_name" value="$(find acl_sim)/worlds/hard_forest.world" />
+
+  <!-- Launch Gazebo with ACL world -->
+  <include file="$(find gazebo_ros)/launch/empty_world.launch">
+    <arg name="paused" value="$(arg paused)"/>
+    <arg name="world_name" value="$(arg world_name)"/>
+    <arg name="verbose" value="$(arg verbose)"/>
+    <arg name="use_sim_time" value="$(arg use_sim_time)"/>
+    <arg name="debug" value="$(arg debug)" />
+  </include>
+
+  <!-- CERLAB quadrotor URDF -->
+  <group if="$(arg lidar)">
+    <param name="robot_description" command="cat '$(find uav_simulator)/urdf/quadcopter_lidar.urdf'" />
+  </group>
+  <group unless="$(arg lidar)">
+    <param name="robot_description" command="cat '$(find uav_simulator)/urdf/quadcopter.urdf'" />
+  </group>
+
+  <!-- Spawn CERLAB quadrotor at (0, 0, 3) -->
+  <node name="spawn_gazebo_model" pkg="gazebo_ros" type="spawn_model"
+        args="-urdf -param robot_description -model quadcopter
+              -x 0.0 -y 0.0 -z 3.0 -Y 0.0"
+        respawn="false" />
+
+  <!-- Throttle ground truth topics -->
+  <node pkg="topic_tools" type="throttle" name="gt_pose_throttle"
+        args="messages /CERLAB/quadcopter/pose_raw 30 /CERLAB/quadcopter/pose"/>
+  <node pkg="topic_tools" type="throttle" name="gt_vel_throttle"
+        args="messages /CERLAB/quadcopter/vel_raw 30 /CERLAB/quadcopter/vel"/>
+  <node pkg="topic_tools" type="throttle" name="gt_acc_throttle"
+        args="messages /CERLAB/quadcopter/acc_raw 30 /CERLAB/quadcopter/acc"/>
+  <node pkg="topic_tools" type="throttle" name="gt_odom_throttle"
+        args="messages /CERLAB/quadcopter/odom_raw 30 /CERLAB/quadcopter/odom"/>
+
+  <!-- TF setup -->
+  <include file="$(find uav_simulator)/launch/setupTF.launch">
+    <arg name="pose_topic" value="/CERLAB/quadcopter/pose" />
+  </include>
+
+  <!-- Keyboard control -->
+  <node name="keyboard_control" pkg="uav_simulator" type="keyboard_control" />
+</launch>

@@ -980,6 +980,100 @@ Or view in the repository at:
 - **DYNUS**: [Original DYNUS repository]
 - **Intent-MPC**: [Original paper/repository]
 
+## Benchmarking
+
+Intent-MPC includes a comprehensive benchmarking system for evaluating performance with dynamic obstacles. The benchmark format is compatible with DYNUS for direct comparison.
+
+### Quick Start
+
+Run 20 benchmark trials with default configuration:
+
+```bash
+cd docker
+make run-benchmark NUM_TRIALS=20 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7 SEED_START=0
+```
+
+Results are saved to `Intent-MPC/data/` and persist on the host machine.
+
+### Analyze Results
+
+```bash
+# Navigate to Intent-MPC directory
+cd ..
+
+# Analyze benchmark data
+python3 scripts/analyze_mpc_benchmark.py --data-dir data/benchmark_20260205_120000
+```
+
+This generates:
+- **Console output**: Detailed statistics summary
+- **CSV file**: Statistical summary for spreadsheets
+- **LaTeX table**: Publication-ready table (DYNUS-compatible format)
+
+### Collected Metrics
+
+The benchmarking system collects 40+ metrics per trial:
+
+**Success Metrics**
+- Goal reached, timeout, collision rates
+
+**Performance Metrics**
+- Flight travel time, path length, path efficiency
+
+**Smoothness Metrics**
+- Jerk RMS, jerk integral, velocity/acceleration statistics
+
+**Safety Metrics**
+- Collision count, penetration depth, minimum distance to obstacles
+
+**Constraint Violations**
+- Velocity, acceleration, and jerk violation counts
+
+**Computation Metrics**
+- Replanning count, average/max replanning time
+
+### Example Configurations
+
+```bash
+# Sparse environment
+make run-benchmark NUM_OBSTACLES=100 DYNAMIC_RATIO=0.5 NUM_TRIALS=30
+
+# Dense environment
+make run-benchmark NUM_OBSTACLES=300 DYNAMIC_RATIO=0.8 NUM_TRIALS=30
+
+# Static obstacles only
+make run-benchmark NUM_OBSTACLES=200 DYNAMIC_RATIO=0.0 NUM_TRIALS=30
+```
+
+### Comparison with DYNUS
+
+Run equivalent DYNUS benchmarks for comparison:
+
+```bash
+# DYNUS benchmark
+cd /home/kkondo/code/dynus_ws/src/dynus
+python3 scripts/run_benchmark.py --num-trials 50 --setup-bash ../../install/setup.bash
+
+# Intent-MPC benchmark
+cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
+make run-benchmark NUM_TRIALS=50 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7
+
+# Analyze both
+python3 ../scripts/analyze_mpc_benchmark.py --data-dir ../data/benchmark_<timestamp>
+cd /home/kkondo/code/dynus_ws/src/dynus
+python3 scripts/analyze_dynamic_benchmark.py --data-dir benchmark_data/default/<timestamp>
+```
+
+### Detailed Documentation
+
+For complete benchmarking documentation, see:
+```bash
+cat ../scripts/BENCHMARK_README.md
+```
+
+Or view in the repository at:
+`scripts/BENCHMARK_README.md`
+
 ## Makefile Targets
 
 Available commands:
@@ -988,6 +1082,8 @@ Available commands:
 make build              # Build Docker image
 make run-dynamic-gazebo # Run DYNUS simulation (RECOMMENDED)
                         # Usage: make run-dynamic-gazebo NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7 SEED=42
+make run-benchmark      # Run benchmark trials with data persistence
+                        # Usage: make run-benchmark NUM_TRIALS=20 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7
 make stop               # Stop all tmux simulation sessions
 make shell              # Open bash shell in container (for manual launch/debugging)
 make run-demo           # Run original circular demo

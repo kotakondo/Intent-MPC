@@ -169,10 +169,8 @@ void obstacleClustering::runKmeans(const pointCluster& cluster, std::vector<poin
 	// run kmeans-----------------------------------------
 	this->kmeans_.reset(new KMeans (dimension, clusterNum));
 
-	// init centroid
-	this->kmeans_->centroid = new double*[clusterNum];
+	// init centroid - just set values, don't reallocate (KMeans constructor already allocated)
 	for (int i=0; i<clusterNum; ++i){
-		this->kmeans_->centroid[i] = new double[dimension];
 		this->kmeans_->centroid[i][0] = initPoints[i](0);
 		this->kmeans_->centroid[i][1] = initPoints[i](1);
 		this->kmeans_->centroid[i][2] = initPoints[i](2);
@@ -222,7 +220,11 @@ void obstacleClustering::runKmeans(const pointCluster& cluster, std::vector<poin
 		cloudClusters[i].clusterMax = clusterMax;
 	}
 
-	delete data;
+	// Free memory properly - delete inner arrays first, then outer array
+	for (int i = 0; i < int(cluster.points.size()); ++i) {
+		delete[] data[i];
+	}
+	delete[] data;
 }
 
 double obstacleClustering::getOrientation(const pointCluster& cluster, bboxVertex& vertex){

@@ -1,0 +1,29 @@
+# Benchmark data (large files)
+data/
+
+# Build artifacts
+build/
+devel/
+install/
+logs/
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.eggs/
+*.egg-info/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# ROS bags
+*.bag
+
+# Temporary files
+*.tmp
+*.bak

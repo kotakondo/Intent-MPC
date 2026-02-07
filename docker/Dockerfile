@@ -40,6 +40,9 @@ RUN apt-get update && apt-get install -y \
     ros-noetic-pcl-ros \
     ros-noetic-tf2-sensor-msgs \
     ros-noetic-message-filters \
+    ros-noetic-rqt \
+    ros-noetic-rqt-common-plugins \
+    ros-noetic-rqt-bag \
     python3-catkin-tools \
     && rm -rf /var/lib/apt/lists/*
 

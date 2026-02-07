@@ -1,7 +1,7 @@
 # Makefile for Intent-MPC Docker environment
 # Based on FASTER docker pattern
 
-.PHONY: build build-clone run run-gazebo run-demo run-dynamic-gazebo run-dev run-gazebo-dev shell stop clean help
+.PHONY: build build-clone run run-gazebo run-demo run-dynamic-gazebo run-dev run-gazebo-dev run-benchmark shell stop clean help
 
 # Image name
 IMAGE_NAME := intent-mpc
@@ -27,7 +27,7 @@ run:
 		--rm \
 		$(IMAGE_NAME)
 
-# Run the container and explicitly start bash
+# Run the container and explicitly start bash (with host workspace mounted)
 shell:
 	docker run -it \
 		--gpus all \
@@ -37,6 +37,7 @@ shell:
 		--network=host \
 		--env="QT_X11_NO_MITSHM=1" \
 		--volume=/tmp/.X11-unix:/tmp/.X11-unix:rw \
+		--volume=$(shell cd ../.. && pwd):/root/ip-mpc_ws/src:rw \
 		--rm \
 		$(IMAGE_NAME) \
 		/bin/bash
@@ -124,6 +125,57 @@ run-gazebo-dev:
 		$(IMAGE_NAME) \
 		/bin/bash -c "cd /root/ip-mpc_ws && source devel/setup.bash && tmuxp load /root/ip-mpc_ws/src/Intent-MPC/docker/acl_forest_sim.yml"
 
+# Run benchmark with data persistence (DYNUS-compatible parameters)
+# Usage: make run-benchmark [NUM_TRIALS=20] [NUM_OBSTACLES=200] [DYNAMIC_RATIO=0.65] [SEED_START=0] [VISUALIZE=1]
+run-benchmark:
+	@echo "Running Intent-MPC benchmark (DYNUS-compatible configuration):"
+	@echo "  NUM_TRIALS    = $(if $(NUM_TRIALS),$(NUM_TRIALS),20 (default))"
+	@echo "  NUM_OBSTACLES = $(if $(NUM_OBSTACLES),$(NUM_OBSTACLES),200 (default))"
+	@echo "  DYNAMIC_RATIO = $(if $(DYNAMIC_RATIO),$(DYNAMIC_RATIO),0.65 (default, DYNUS match))"
+	@echo "  SEED_START    = $(if $(SEED_START),$(SEED_START),0 (default))"
+	@echo "  VISUALIZE     = $(if $(VISUALIZE),$(VISUALIZE) (RViz enabled),0 (headless))"
+	@echo ""
+	@echo "Data will be saved to: Intent-MPC/data/"
+	@mkdir -p ../data
+	docker run -it \
+		--gpus all \
+		--env="NVIDIA_DRIVER_CAPABILITIES=all" \
+		--privileged \
+		-e DISPLAY=${DISPLAY} \
+		--network=host \
+		--env="QT_X11_NO_MITSHM=1" \
+		--volume=/tmp/.X11-unix:/tmp/.X11-unix:rw \
+		--volume=$(shell cd ../.. && pwd):/root/ip-mpc_ws/src:rw \
+		--rm \
+		$(IMAGE_NAME) \
+		/bin/bash -c "cd /root/ip-mpc_ws && source devel/setup.bash && source src/Intent-MPC/uav_simulator/gazeboSetup.bash && python3 src/Intent-MPC/scripts/run_mpc_benchmark.py --num-trials $(if $(NUM_TRIALS),$(NUM_TRIALS),20) --num-obstacles $(if $(NUM_OBSTACLES),$(NUM_OBSTACLES),200) --dynamic-ratio $(if $(DYNAMIC_RATIO),$(DYNAMIC_RATIO),0.65) --seed-start $(if $(SEED_START),$(SEED_START),0) $(if $(VISUALIZE),--visualize,)"
+
+# Run benchmark with RViz visualization (convenience target)
+# Usage: make run-benchmark-viz [NUM_TRIALS=1] [NUM_OBSTACLES=50]
+run-benchmark-viz:
+	$(MAKE) run-benchmark VISUALIZE=1 NUM_TRIALS=$(if $(NUM_TRIALS),$(NUM_TRIALS),1) NUM_OBSTACLES=$(if $(NUM_OBSTACLES),$(NUM_OBSTACLES),50)
+
+# Analyze benchmark data and generate LaTeX table
+# Usage: make analyze-benchmark DATA_DIR=benchmark_20260205_143512
+analyze-benchmark:
+	@if [ -z "$(DATA_DIR)" ]; then \
+		echo "ERROR: DATA_DIR is required"; \
+		echo "Usage: make analyze-benchmark DATA_DIR=benchmark_TIMESTAMP"; \
+		echo ""; \
+		echo "Available benchmark directories:"; \
+		ls -d ../data/benchmark_* 2>/dev/null || echo "  (none found)"; \
+		exit 1; \
+	fi
+	@echo "Analyzing benchmark data: $(DATA_DIR)"
+	docker run -it \
+		--gpus all \
+		--privileged \
+		--volume=$(shell cd ../.. && pwd):/root/ip-mpc_ws/src:rw \
+		--volume=/home/kkondo/paper_writing:/home/kkondo/paper_writing:rw \
+		--rm \
+		$(IMAGE_NAME) \
+		/bin/bash -c "pip install pandas -q && cd /root/ip-mpc_ws && source devel/setup.bash && python3 src/Intent-MPC/scripts/analyze_benchmark.py --data-dir src/Intent-MPC/data/$(DATA_DIR)"
+
 # Stop running simulations
 stop:
 	-tmux kill-session -t dynus_sim 2>/dev/null || true
@@ -149,6 +201,8 @@ help:
 	@echo "                       Usage: make run-dynamic-gazebo [NUM_OBSTACLES=200] [DYNAMIC_RATIO=0.7] [SEED=0]"
 	@echo "  run-dev          - Run with host workspace mounted (for development)"
 	@echo "  run-gazebo-dev   - Auto-launch ACL simulation with mounted workspace"
+	@echo "  run-benchmark    - Run benchmark trials with data persistence"
+	@echo "                       Usage: make run-benchmark [NUM_TRIALS=20] [NUM_OBSTACLES=200] [DYNAMIC_RATIO=0.7] [SEED_START=0]"
 	@echo "  shell            - Run the container and start bash"
 	@echo "  stop             - Stop all running simulation sessions"
 	@echo "  clean            - Remove stopped containers"
