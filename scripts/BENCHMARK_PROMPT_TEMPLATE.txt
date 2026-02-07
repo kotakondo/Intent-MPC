@@ -1,0 +1,61 @@
+================================================================================
+COPY EVERYTHING BELOW THIS LINE INTO A NEW CLAUDE CODE SESSION
+================================================================================
+
+I have a ROS1 Noetic-based motion planner at: /path/to/your/repo
+
+Please help me dockerize this and set up DYNUS benchmark infrastructure.
+
+## What I Need:
+
+1. **Docker Environment**
+   - Dockerfile with ros:noetic, Gazebo, RViz, GUI support
+   - Makefile with build/run/shell targets
+   - X11 forwarding for visualization
+
+2. **DYNUS Obstacle Integration**
+   - Clone https://github.com/kotakondo/dynus_obstacles_ros1
+   - Create launch file: Gazebo + robot + dynamic obstacles
+   - Configurable: num_obstacles, dynamic_ratio, seed
+
+3. **Benchmark Scripts**
+   - run_benchmark.py: automated multi-trial runner
+   - analyze_benchmark.py: compute stats, generate LaTeX tables
+   - Record rosbags for post-processing
+
+4. **Metrics to Track**
+   - Success rate (goal_reached AND collision_free)
+   - Flight time, path length
+   - Velocity, acceleration, jerk (avg/max)
+   - Minimum distance to obstacles
+   - Planning/MPC computation time
+
+## DYNUS Standard Configuration:
+- 200 obstacles, 65% dynamic
+- Environment: 100m x 30m corridor
+- Start: (0, 0, 2) → Goal: (105, 0, 2)
+- v_max: 5.0 m/s, a_max: 10.0 m/s²
+- 20 trials per configuration
+
+## Please Start By:
+1. Analyzing my repo structure (packages, launch files, URDF, sensors)
+2. Identifying the main planner node and how it's launched
+3. Finding configuration files and key parameters
+4. Then proceed with Docker setup and benchmark integration
+
+================================================================================
+CUSTOMIZATION NOTES - MODIFY BEFORE PASTING
+================================================================================
+
+Replace these values for your specific planner:
+
+- /path/to/your/repo → actual path to your ROS1 workspace
+- Start/Goal positions → match your planner's test scenario
+- v_max, a_max → match your planner's constraints
+- Environment size → adjust if your planner uses different bounds
+
+If your planner has special requirements, add them:
+- Special dependencies (CUDA, specific libraries)
+- Custom message types
+- External services or databases
+- Hardware-in-the-loop requirements
