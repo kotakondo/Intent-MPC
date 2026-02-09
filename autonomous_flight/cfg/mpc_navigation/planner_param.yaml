@@ -23,8 +23,8 @@ poly_traj/maximum_iteration_num: 10
 poly_traj/use_pwl_failsafe: true
 
 mpc_planner/horizon: 30
-mpc_planner/y_range_min: -7.0  # Corridor bounds (obstacles in Y∈[-6,6])
-mpc_planner/y_range_max: 7.0
+mpc_planner/y_range_min: -5.0  # Corridor bounds (tighter than obstacle field)
+mpc_planner/y_range_max: 5.0
 mpc_planner/z_range_min: 0.5   # Match obstacle z_min
 mpc_planner/z_range_max: 4.5   # Match obstacle z_max 
 mpc_planner/static_safety_dist: 0.8
