@@ -450,9 +450,12 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 	solver.setWarmStart(primalVariable, dualVariable);
 	// }
-	// solve the QP problem
+	// solve the QP problem - TIME THIS FOR CORE OPTIMIZATION METRIC
+	ros::Time qpSolveStart = ros::Time::now();
 	if (solver.solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
 		return 0;
+	ros::Time qpSolveEnd = ros::Time::now();
+	this->lastQpSolveTime_ = (qpSolveEnd - qpSolveStart).toSec();
 
 	// if (solver.workspace()->info->solve_time>0.015){
 	// 	return 0;
@@ -1228,6 +1231,10 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 
 	double mpcPlanner::getHorizon(){
 		return this->horizon_;
+	}
+
+	double mpcPlanner::getLastQpSolveTime(){
+		return this->lastQpSolveTime_;
 	}
 
 	void mpcPlanner::visCB(const ros::TimerEvent&){

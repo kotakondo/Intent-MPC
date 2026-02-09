@@ -95,6 +95,9 @@ namespace trajPlanner{
 		double ceilingHeight_;
 		double angle_;
 
+		// QP solve timing
+		double lastQpSolveTime_ = 0.0;  // seconds
+
 	public:
 		mpcPlanner(const ros::NodeHandle& nh);
 		void initParam();
@@ -163,7 +166,8 @@ namespace trajPlanner{
 		Eigen::Vector3d getRef(double t);
 		double getTs();
 		double getHorizon();
-		
+		double getLastQpSolveTime();  // Returns last QP solve time in seconds
+
 		// visualization
 		void visCB(const ros::TimerEvent&);
 		void publishMPCTrajectory();

@@ -320,12 +320,10 @@ namespace AutoFlight{
 					else{
 						newTrajReturn = this->mpc_->makePlan();
 					}
-					ros::Time mpcEndTime = ros::Time::now();
-					double mpcComputeTime = (mpcEndTime - trajStartTime).toSec();
 
-					// Publish MPC computation time
+					// Publish QP-only solve time (core optimization, not full planning cycle)
 					std_msgs::Float64 computeTimeMsg;
-					computeTimeMsg.data = mpcComputeTime;
+					computeTimeMsg.data = this->mpc_->getLastQpSolveTime();
 					this->mpcComputeTimePub_.publish(computeTimeMsg);
 
 					nav_msgs::Path mpcTraj;
