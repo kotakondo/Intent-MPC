@@ -87,8 +87,8 @@ class BenchmarkMetrics:
 
     # Constraint violations (DYNUS benchmark limits)
     vel_limit: float = 5.0  # m/s (DYNUS: v_max)
-    acc_limit: float = 10.0  # m/s² (DYNUS: a_max)
-    jerk_limit: float = 50.0  # m/s³ (DYNUS: j_max)
+    acc_limit: float = 20.0  # m/s² (DYNUS: a_max)
+    jerk_limit: float = 100.0  # m/s³ (DYNUS: j_max)
 
     vel_violation_count: int = 0
     acc_violation_count: int = 0

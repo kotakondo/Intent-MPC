@@ -80,6 +80,8 @@ namespace trajPlanner{
 		int horizon_;
 		double maxVel_ = 1.0;
 		double maxAcc_ = 1.0;
+		double yRangeMin_;
+		double yRangeMax_;
 		double zRangeMin_;
 		double zRangeMax_;
 		double dynamicSafetyDist_;

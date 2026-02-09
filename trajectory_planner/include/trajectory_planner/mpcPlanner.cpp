@@ -42,7 +42,25 @@ namespace trajPlanner{
 		}
 		else{
 			cout << this->hint_ << ": Z range max is set to: " << this->zRangeMax_ << "m" << endl;
-		}	
+		}
+
+		// Y range min (lateral corridor bound)
+		if (not this->nh_.getParam(this->ns_ + "/y_range_min", this->yRangeMin_)){
+			this->yRangeMin_ = -1e10;  // Default: no constraint
+			cout << this->hint_ << ": No y range min param. Use default: unbounded" << endl;
+		}
+		else{
+			cout << this->hint_ << ": Y range min is set to: " << this->yRangeMin_ << "m" << endl;
+		}
+
+		// Y range max (lateral corridor bound)
+		if (not this->nh_.getParam(this->ns_ + "/y_range_max", this->yRangeMax_)){
+			this->yRangeMax_ = 1e10;  // Default: no constraint
+			cout << this->hint_ << ": No y range max param. Use default: unbounded" << endl;
+		}
+		else{
+			cout << this->hint_ << ": Y range max is set to: " << this->yRangeMax_ << "m" << endl;
+		}
 
 		// pointcloud resolution for clustering
 		if (not this->nh_.getParam(this->ns_ + "/cloud_res", this->cloudRes_)){
@@ -828,9 +846,9 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 
 	void mpcPlanner::setInequalityConstraints(Eigen::Matrix<double, numStates, 1> &xMax, Eigen::Matrix<double, numStates, 1> &xMin,
 								Eigen::Matrix<double, numControls, 1> &uMax, Eigen::Matrix<double, numControls, 1> &uMin){
-		// state bound
-		xMin <<  -INFINITY, -INFINITY, this->zRangeMin_, -this->maxVel_, -this->maxVel_, -this->maxVel_, -INFINITY, -INFINITY;
-		xMax << INFINITY, INFINITY, this->zRangeMax_, this->maxVel_, this->maxVel_, this->maxVel_, INFINITY, INFINITY;
+		// state bound (x, y, z, vx, vy, vz, ?, ?)
+		xMin <<  -INFINITY, this->yRangeMin_, this->zRangeMin_, -this->maxVel_, -this->maxVel_, -this->maxVel_, -INFINITY, -INFINITY;
+		xMax << INFINITY, this->yRangeMax_, this->zRangeMax_, this->maxVel_, this->maxVel_, this->maxVel_, INFINITY, INFINITY;
 
 		// control bound
 		double skslimit = 1.0 - pow((1 - this->staticSlack_), 2);

@@ -33,16 +33,18 @@ p_max: 0.97
 p_occ: 0.80
 
 
-# Map
-map_resolution: 0.15  # coarser for larger map (was 0.1)
-ground_height: -0.1 # m
-map_size: [220, 20, 6] # meter. x y z - DYNUS benchmark: map centered at 0, so need 220m to cover x=[-110,110] for goal at x=105
-local_update_range: [6, 6, 6]  # DYNUS benchmark
+# Map - DYNUS benchmark bounds: X∈[-5,110], Y∈[-10,10], Z∈[0.5,5.0]
+# Map is centered at origin, so map_size defines [-size/2, size/2] for X,Y
+# and [ground_height, ground_height+size_z] for Z
+map_resolution: 0.15  # coarser for larger map
+ground_height: 0.5  # m - points below this are considered ground
+map_size: [220, 20, 4.5] # meter. x y z - covers X∈[-110,110], Y∈[-10,10], Z∈[0.5,5.0]
+local_update_range: [6, 6, 4]  # DYNUS benchmark
 local_bound_inflation: 3.0 # inflate local bound in meter
 clean_local_map: false
 
 # visualziation
-local_map_size: [20, 20, 6] # meter. in x y z direction (only for visualization)
+local_map_size: [20, 20, 4.5] # meter. in x y z direction (only for visualization)
 max_height_visualization: 5.0 # m - DYNUS benchmark (obstacles up to z=4.5)
 visualize_global_map: true
 verbose: false
