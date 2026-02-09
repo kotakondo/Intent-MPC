@@ -566,8 +566,8 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 				std::vector<Eigen::VectorXd> statesSol;
 				std::vector<Eigen::VectorXd> controlsSol;
 				double time = (ros::Time::now()-startTime).toSec();
-				if (time<0.1){
-					double timeLimit = max(0.03 - time, 0.02);
+				if (time<0.15){
+					double timeLimit = max(0.05 - time, 0.05);  // 50ms minimum for solver convergence
 					successSolve = this->solveTraj(staticObstacles, obstaclesPosComb[i], obstaclesSizeComb[i], statesSol, controlsSol, xRef, timeLimit);
 					if (successSolve){
 						candidateStatesTemp.push_back(statesSol);
