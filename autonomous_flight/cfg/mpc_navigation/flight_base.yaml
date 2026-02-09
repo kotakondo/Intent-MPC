@@ -12,5 +12,4 @@ desired_angular_velocity: 0.5 # rad/s - DYNUS benchmark constraint (was 0.5)
 # MPC target parameters
 use_predefined_goal: true
 predefined_goal_directory: "/cfg/mpc_navigation/ref_trajectory_dynus_benchmark.txt"  # DYNUS benchmark trajectory (0,0,2)->(105,0,2)
-execute_path_times: 1 # execute once (was 10 for circular demo) 
-
+execute_path_times: 1 # execute once (was 10 for circular demo)

@@ -158,8 +158,8 @@ namespace AutoFlight{
 		this->pwlTraj_.reset(new trajPlanner::pwlTraj (this->nh_));
 
 		this->mpc_.reset(new trajPlanner::mpcPlanner (this->nh_));
-		this->mpc_->updateMaxVel(this->desiredVel_*1.5);
-		this->mpc_->updateMaxAcc(this->desiredAcc_);
+		this->mpc_->updateMaxVel(this->desiredVel_);  // Hard velocity limit (no 1.5x multiplier)
+		this->mpc_->updateMaxAcc(this->desiredAcc_);  // Hard acceleration limit
 		this->mpc_->setMap(this->map_);
 	}
 
