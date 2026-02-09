@@ -5,9 +5,9 @@ takeoff_height: 2.0 # m - DYNUS benchmark height (was 3.0)
 use_global_planner: false
 no_yaw_turning: false
 use_yaw_control: true
-desired_velocity: 1.0 # m/s - DYNUS benchmark constraint (was 2.0)
-desired_acceleration: 2.0 # m/s^2 - DYNUS benchmark constraint (was 2.0)
-desired_angular_velocity: 1.0 # rad/s - DYNUS benchmark constraint (was 0.5)
+desired_velocity: 5.0 # m/s - DYNUS benchmark v_max
+desired_acceleration: 20.0 # m/s^2 - DYNUS benchmark a_max
+desired_angular_velocity: 0.5 # rad/s - DYNUS benchmark constraint (was 0.5)
 
 # MPC target parameters
 use_predefined_goal: true
