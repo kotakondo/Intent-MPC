@@ -20,13 +20,25 @@ import numpy as np
 import math
 
 # Try to import rosbag for collision post-processing
+HAS_ROSBAG = False
+HAS_ROSBAGS = False
 try:
     import rosbag
     HAS_ROSBAG = True
 except ImportError:
-    HAS_ROSBAG = False
-    print("Warning: rosbag not available. Will skip collision post-processing.")
-    print("Install with: pip install --extra-index-url https://rospypi.github.io/simple/ rosbag")
+    pass
+
+# Also try rosbags (ROS 2 compatible reader for ROS 1 bags)
+try:
+    from rosbags.rosbag1 import Reader as RosbagReader
+    from rosbags.typesys import Stores, get_typestore, get_types_from_msg
+    HAS_ROSBAGS = True
+except ImportError:
+    pass
+
+if not HAS_ROSBAG and not HAS_ROSBAGS:
+    print("Warning: Neither rosbag nor rosbags available. Will skip bag-based post-processing.")
+    print("Install with: pip install rosbags")
 
 
 # ============================================================================
@@ -123,7 +135,196 @@ def analyze_mpc_compute_time_from_bag(bag_path: Path):
     }
 
 
-def analyze_collision_from_bag(bag_path: Path, drone_bbox=(0.1, 0.1, 0.1)):
+def recompute_violations_from_bag(bag_path, vel_limit=5.0, acc_limit=20.0,
+                                   jerk_limit=100.0, tolerance=1e-3):
+    """Recompute constraint violations from a ROS1 bag in post-processing.
+
+    Reads /autonomous_flight/target_state (Target.msg with position, velocity,
+    acceleration fields) and counts per-timestep violations using Linf norm:
+    a violation at a single timestep occurs when ANY axis component exceeds the
+    limit + tolerance.
+
+    Jerk is computed via finite differences on acceleration.
+
+    Returns dict with:
+        vel_violation_count, vel_total,
+        acc_violation_count, acc_total,
+        jerk_violation_count, jerk_total
+    """
+    empty = {
+        'vel_violation_count': 0, 'vel_total': 0,
+        'acc_violation_count': 0, 'acc_total': 0,
+        'jerk_violation_count': 0, 'jerk_total': 0,
+    }
+
+    bag_path = Path(bag_path)
+    if not bag_path.exists() or not HAS_ROSBAG:
+        return empty
+
+    try:
+        bag = rosbag.Bag(str(bag_path))
+    except Exception as e:
+        print(f"  ERROR opening bag for violations: {e}")
+        return empty
+
+    # Read commanded trajectory from /autonomous_flight/target_state
+    times = []
+    velocities = []
+    accelerations = []
+
+    try:
+        for topic, msg, t in bag.read_messages(
+                topics=['/autonomous_flight/target_state']):
+            stamp = t.to_sec()
+            vel = (msg.velocity.x, msg.velocity.y, msg.velocity.z)
+            acc = (msg.acceleration.x, msg.acceleration.y, msg.acceleration.z)
+            times.append(stamp)
+            velocities.append(vel)
+            accelerations.append(acc)
+    finally:
+        bag.close()
+
+    if not times:
+        return empty
+
+    times = np.array(times)
+    velocities = np.array(velocities)       # (N, 3)
+    accelerations = np.array(accelerations)  # (N, 3)
+
+    n = len(times)
+
+    # --- Velocity violations (Linf: any axis exceeds limit) ---
+    vel_violation_count = 0
+    for i in range(n):
+        if (abs(velocities[i, 0]) > vel_limit + tolerance or
+                abs(velocities[i, 1]) > vel_limit + tolerance or
+                abs(velocities[i, 2]) > vel_limit + tolerance):
+            vel_violation_count += 1
+
+    # --- Acceleration violations (Linf: any axis exceeds limit) ---
+    acc_violation_count = 0
+    for i in range(n):
+        if (abs(accelerations[i, 0]) > acc_limit + tolerance or
+                abs(accelerations[i, 1]) > acc_limit + tolerance or
+                abs(accelerations[i, 2]) > acc_limit + tolerance):
+            acc_violation_count += 1
+
+    # --- Jerk violations via finite differences (Linf) ---
+    jerk_violation_count = 0
+    jerk_total = 0
+    for i in range(1, n):
+        dt = times[i] - times[i - 1]
+        if dt > 0.001:
+            jx = (accelerations[i, 0] - accelerations[i - 1, 0]) / dt
+            jy = (accelerations[i, 1] - accelerations[i - 1, 1]) / dt
+            jz = (accelerations[i, 2] - accelerations[i - 1, 2]) / dt
+            jerk_total += 1
+            if (abs(jx) > jerk_limit + tolerance or
+                    abs(jy) > jerk_limit + tolerance or
+                    abs(jz) > jerk_limit + tolerance):
+                jerk_violation_count += 1
+
+    return {
+        'vel_violation_count': vel_violation_count,
+        'vel_total': n,
+        'acc_violation_count': acc_violation_count,
+        'acc_total': n,
+        'jerk_violation_count': jerk_violation_count,
+        'jerk_total': jerk_total,
+    }
+
+
+def recompute_violations_from_bag_rosbags(bag_path, vel_limit=5.0, acc_limit=20.0,
+                                           jerk_limit=100.0, tolerance=1e-3):
+    """Recompute constraint violations using rosbags library (ROS 2 compatible).
+
+    Same methodology as recompute_violations_from_bag() but uses rosbags instead
+    of rosbag, avoiding ROS 1/2 conflicts.
+    """
+    empty = {
+        'vel_violation_count': 0, 'vel_total': 0,
+        'acc_violation_count': 0, 'acc_total': 0,
+        'jerk_violation_count': 0, 'jerk_total': 0,
+    }
+
+    bag_path = Path(bag_path)
+    if not bag_path.exists() or not HAS_ROSBAGS:
+        return empty
+
+    # Register custom Target message type
+    typestore = get_typestore(Stores.ROS1_NOETIC)
+    target_msgdef = (
+        'std_msgs/Header header\n'
+        'uint8 type_mask\n'
+        'uint8 IGNORE_ACC = 1\n'
+        'uint8 IGNORE_ACC_VEL = 2\n'
+        'geometry_msgs/Vector3 position\n'
+        'geometry_msgs/Vector3 velocity\n'
+        'geometry_msgs/Vector3 acceleration\n'
+        'float32 yaw\n'
+    )
+    try:
+        add_types = get_types_from_msg(target_msgdef, 'tracking_controller/msg/Target')
+        typestore.register(add_types)
+    except Exception:
+        pass  # Already registered
+
+    times = []
+    velocities = []
+    accelerations = []
+
+    try:
+        with RosbagReader(str(bag_path)) as reader:
+            conns = [c for c in reader.connections
+                     if c.topic == '/autonomous_flight/target_state']
+            for conn, timestamp, rawdata in reader.messages(connections=conns):
+                msg = typestore.deserialize_ros1(rawdata, conn.msgtype)
+                times.append(timestamp * 1e-9)  # nanoseconds to seconds
+                velocities.append((msg.velocity.x, msg.velocity.y, msg.velocity.z))
+                accelerations.append((msg.acceleration.x, msg.acceleration.y, msg.acceleration.z))
+    except Exception as e:
+        print(f"  ERROR reading bag with rosbags: {e}")
+        return empty
+
+    if not times:
+        return empty
+
+    times = np.array(times)
+    velocities = np.array(velocities)
+    accelerations = np.array(accelerations)
+    n = len(times)
+
+    # Velocity violations (Linf: any axis exceeds limit)
+    vel_viol = np.any(np.abs(velocities) > vel_limit + tolerance, axis=1)
+    vel_violation_count = int(np.sum(vel_viol))
+
+    # Acceleration violations (Linf: any axis exceeds limit)
+    acc_viol = np.any(np.abs(accelerations) > acc_limit + tolerance, axis=1)
+    acc_violation_count = int(np.sum(acc_viol))
+
+    # Jerk violations via finite differences (Linf)
+    jerk_violation_count = 0
+    jerk_total = 0
+    dt = np.diff(times)
+    valid = dt > 0.001
+    if np.any(valid):
+        d_acc = np.diff(accelerations, axis=0)
+        jerks = d_acc[valid] / dt[valid, np.newaxis]
+        jerk_total = len(jerks)
+        jerk_viol = np.any(np.abs(jerks) > jerk_limit + tolerance, axis=1)
+        jerk_violation_count = int(np.sum(jerk_viol))
+
+    return {
+        'vel_violation_count': vel_violation_count,
+        'vel_total': n,
+        'acc_violation_count': acc_violation_count,
+        'acc_total': n,
+        'jerk_violation_count': jerk_violation_count,
+        'jerk_total': jerk_total,
+    }
+
+
+def analyze_collision_from_bag(bag_path: Path, drone_bbox=(0.0, 0.0, 0.0)):
     """Analyze collisions from rosbag"""
     if not bag_path.exists():
         return {'collision_count': 0, 'min_distance': float('inf'),
@@ -152,14 +353,16 @@ def analyze_collision_from_bag(bag_path: Path, drone_bbox=(0.1, 0.1, 0.1)):
                                     msg.pose.pose.position.y, msg.pose.pose.position.z))
 
         # Read from /dynus/model_states (DYNUS obstacles), fallback to /gazebo/model_states
+        # Use index as key since all obstacles of the same type share the same name
         for topic, msg, t in bag.read_messages(topics=['/dynus/model_states', '/gazebo/model_states']):
             for i, name in enumerate(msg.name):
                 if 'obstacle' in name:
                     pos = msg.pose[i].position
-                    if name not in obstacle_trajectories:
-                        obstacle_trajectories[name] = []
-                        obstacle_sizes[name] = parse_obstacle_size(name)
-                    obstacle_trajectories[name].append((t.to_sec(), pos.x, pos.y, pos.z))
+                    obs_key = i
+                    if obs_key not in obstacle_trajectories:
+                        obstacle_trajectories[obs_key] = []
+                        obstacle_sizes[obs_key] = parse_obstacle_size(name)
+                    obstacle_trajectories[obs_key].append((t.to_sec(), pos.x, pos.y, pos.z))
     finally:
         bag.close()
 
@@ -207,14 +410,20 @@ def analyze_collision_from_bag(bag_path: Path, drone_bbox=(0.1, 0.1, 0.1)):
                 obs_pos[0], obs_pos[1], obs_pos[2],
                 obs_half_extents[0], obs_half_extents[1], obs_half_extents[2])
 
-            distance = drone_bbox_obj.distance_to(obs_bbox)
+            # Euclidean distance from drone center to closest point on obstacle
+            # AABB surface, consistent with DYNUS/FAPP/Ego-Swarm analysis scripts.
+            # Does NOT account for drone size — measures from drone center point.
+            hx, hy, hz = obs_half_extents
+            dx = max(0.0, abs(px - obs_pos[0]) - hx)
+            dy = max(0.0, abs(py - obs_pos[1]) - hy)
+            dz = max(0.0, abs(pz - obs_pos[2]) - hz)
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
             min_distance = min(min_distance, distance)
 
             if drone_bbox_obj.intersects(obs_bbox):
                 segment_collision_free = False
                 collisions += 1
-                penetration = -distance if distance < 0 else 0.0
-                max_penetration = max(max_penetration, penetration)
+                max_penetration = 0.0  # Not meaningful for per-axis distance
                 collided_obstacles.add(obs_name)
 
         if segment_collision_free:
@@ -269,13 +478,87 @@ def postprocess_collisions(data_dir: Path, df: pd.DataFrame):
         df.at[idx, 'mpc_compute_time_std'] = mpc_result['mpc_compute_time_std']
         df.at[idx, 'mpc_solve_count'] = mpc_result['mpc_solve_count']
 
+        # Recompute constraint violations from bag (Linf norm, per-timestep)
+        viol_result = recompute_violations_from_bag(bag_path)
+        df.at[idx, 'bag_vel_violation_count'] = viol_result['vel_violation_count']
+        df.at[idx, 'bag_vel_total'] = viol_result['vel_total']
+        df.at[idx, 'bag_acc_violation_count'] = viol_result['acc_violation_count']
+        df.at[idx, 'bag_acc_total'] = viol_result['acc_total']
+        df.at[idx, 'bag_jerk_violation_count'] = viol_result['jerk_violation_count']
+        df.at[idx, 'bag_jerk_total'] = viol_result['jerk_total']
+
         min_dist_str = f"{result['min_distance']:.3f}m" if result['min_distance'] >= 0 else "N/A"
         mpc_time_str = f"{mpc_result['mpc_compute_time_avg']*1000:.1f}ms" if mpc_result['mpc_solve_count'] > 0 else "N/A"
-        print(f"-> collisions={result['collision_count']}, min_dist={min_dist_str}, mpc_time={mpc_time_str}")
+        viol_str = (f"vel={viol_result['vel_violation_count']}/{viol_result['vel_total']}, "
+                    f"acc={viol_result['acc_violation_count']}/{viol_result['acc_total']}, "
+                    f"jerk={viol_result['jerk_violation_count']}/{viol_result['jerk_total']}")
+        print(f"-> collisions={result['collision_count']}, min_dist={min_dist_str}, mpc_time={mpc_time_str}, violations=[{viol_str}]")
 
     output_csv = data_dir / "benchmark_intent_mpc_postprocessed.csv"
     df.to_csv(output_csv, index=False)
     print(f"\n✓ Post-processed data saved: {output_csv}")
+
+    return df
+
+
+def recompute_violations_from_bags(data_dir: Path, df: pd.DataFrame):
+    """Recompute per-timestep Linf violations from bags when CSV lacks those columns.
+
+    Uses the rosbags library (ROS 2 compatible) to read ROS 1 bags.
+    Adds vel_violation_count, vel_total_samples, acc_violation_count, etc.
+    to the DataFrame.
+    """
+    if not HAS_ROSBAGS:
+        return df
+
+    # Check if per-timestep columns already exist with valid data
+    if ('vel_violation_count' in df.columns and 'vel_total_samples' in df.columns
+            and df['vel_total_samples'].fillna(0).sum() > 0):
+        return df  # Already have correct data
+
+    bags_dir = data_dir / "bags"
+    if not bags_dir.exists():
+        return df
+
+    print("\n  Recomputing per-timestep Linf violations from bags...")
+
+    for idx, row in df.iterrows():
+        trial_id = row['trial_id']
+        bag_path = bags_dir / f"trial_{trial_id}.bag"
+
+        if not bag_path.exists():
+            continue
+
+        # Read vel/acc limits from CSV if available
+        vel_limit = row.get('vel_limit', 5.0)
+        acc_limit = row.get('acc_limit', 20.0)
+        jerk_limit = row.get('jerk_limit', 100.0)
+        if pd.isna(vel_limit):
+            vel_limit = 5.0
+        if pd.isna(acc_limit):
+            acc_limit = 20.0
+        if pd.isna(jerk_limit):
+            jerk_limit = 100.0
+
+        result = recompute_violations_from_bag_rosbags(
+            bag_path, vel_limit=vel_limit, acc_limit=acc_limit,
+            jerk_limit=jerk_limit)
+
+        df.at[idx, 'vel_violation_count'] = result['vel_violation_count']
+        df.at[idx, 'vel_total_samples'] = result['vel_total']
+        df.at[idx, 'acc_violation_count'] = result['acc_violation_count']
+        df.at[idx, 'acc_total_samples'] = result['acc_total']
+        df.at[idx, 'jerk_violation_count'] = result['jerk_violation_count']
+        df.at[idx, 'jerk_total_samples'] = result['jerk_total']
+
+        if result['vel_total'] > 0:
+            vel_rate = result['vel_violation_count'] / result['vel_total'] * 100
+            acc_rate = result['acc_violation_count'] / result['acc_total'] * 100
+            jerk_rate = (result['jerk_violation_count'] / result['jerk_total'] * 100
+                         if result['jerk_total'] > 0 else 0)
+            print(f"    Trial {trial_id}: vel={vel_rate:.1f}% ({result['vel_violation_count']}/{result['vel_total']}), "
+                  f"acc={acc_rate:.1f}% ({result['acc_violation_count']}/{result['acc_total']}), "
+                  f"jerk={jerk_rate:.1f}% ({result['jerk_violation_count']}/{result['jerk_total']})")
 
     return df
 
@@ -357,10 +640,47 @@ def compute_statistics(df: pd.DataFrame):
                 stats[f'{metric}_std'] = values.std()
 
     # Constraint violations (from valid runs only)
+    # DYNUS methodology: violation rate = violating_timesteps / total_timesteps × 100%
+    # where a timestep is a violation if ANY axis exceeds the limit (Linf).
+    # Priority: 1) CSV per-timestep Linf columns, 2) bag-recomputed, 3) per-axis fallback
     for viol_type in ['vel', 'acc', 'jerk']:
-        col = f'{viol_type}_violation_count'
-        if col in valid_runs.columns:
-            viol_rate = (valid_runs[col] > 0).mean() * 100
+        # Option 1: Per-timestep Linf columns from runner (preferred)
+        count_col = f'{viol_type}_violation_count'
+        total_col = f'{viol_type}_total_samples'
+        if count_col in valid_runs.columns and total_col in valid_runs.columns:
+            total_violations = valid_runs[count_col].fillna(0).sum()
+            total_samples = valid_runs[total_col].fillna(0).sum()
+            if total_samples > 0:
+                viol_rate = total_violations / total_samples * 100.0
+            else:
+                viol_rate = 0.0
+            stats[f'{viol_type}_violation_rate'] = viol_rate
+            continue
+
+        # Option 2: Bag-recomputed Linf violations (post-processed from rosbags)
+        bag_count_col = f'bag_{viol_type}_violation_count'
+        bag_total_col = f'bag_{viol_type}_total'
+        if bag_count_col in valid_runs.columns and bag_total_col in valid_runs.columns:
+            total_violations = valid_runs[bag_count_col].fillna(0).sum()
+            total_samples = valid_runs[bag_total_col].fillna(0).sum()
+            if total_samples > 0:
+                viol_rate = total_violations / total_samples * 100.0
+            else:
+                viol_rate = 0.0
+            stats[f'{viol_type}_violation_rate'] = viol_rate
+            continue
+
+        # Option 3: Per-axis columns fallback (old data without per-timestep counts).
+        # Without total_samples, we cannot compute the exact timestep-based rate.
+        # Fall back to: fraction of runs that had at least one violation.
+        x_col = f'{viol_type}_violation_count_x'
+        y_col = f'{viol_type}_violation_count_y'
+        z_col = f'{viol_type}_violation_count_z'
+        if x_col in valid_runs.columns:
+            total_viols_per_run = (valid_runs[x_col].fillna(0)
+                                   + valid_runs[y_col].fillna(0)
+                                   + valid_runs[z_col].fillna(0))
+            viol_rate = (total_viols_per_run > 0).mean() * 100
             stats[f'{viol_type}_violation_rate'] = viol_rate
 
     # Safety metrics - min distance (from valid runs only)
@@ -445,60 +765,476 @@ def print_statistics(stats: dict):
             print(f"  {viol.upper()} violation rate: {stats[f'{viol}_violation_rate']:.1f}%")
 
 
-def update_dynus_latex_table(stats: dict, dynus_table_path: Path, algorithm_name: str = "I-MPC"):
-    """Update DYNUS LaTeX table with I-MPC results
+def _format_wa_label(acceleration_weight):
+    """Format acceleration_weight as $w_a$=\\num{eN} for powers of 10"""
+    if acceleration_weight is not None and acceleration_weight > 0:
+        try:
+            exp = round(math.log10(acceleration_weight))
+            if acceleration_weight == 10 ** exp:
+                return f'$w_a$=\\num{{e{exp}}}'
+        except (ValueError, OverflowError):
+            pass
+        return f'$w_a$={acceleration_weight}'
+    return ''
 
-    Table format (9 columns):
-    Algorithm | R^{succ} | T^{per}_{opt} | T_{trav} | L_{path} | S_{jerk} | d_{min} | rho_{vel} | rho_{acc} | rho_{jerk}
 
-    Note: R^{succ} = success rate = goal_reached AND collision_free
+def _format_vmax_label(max_vel):
+    """Format max_vel as $v_{max}$=X.X for LaTeX"""
+    if max_vel is not None and max_vel > 0:
+        if max_vel == int(max_vel):
+            return f'$v_{{\\max}}$={int(max_vel)}'
+        return f'$v_{{\\max}}$={max_vel}'
+    return ''
+
+
+def parse_config_from_dirname(dirname: str):
+    """Parse max_vel and max_acc from directory name like 'max_vel_3_acc_3'."""
+    import re
+    match = re.match(r'max_vel_(\d+(?:\.\d+)?)_acc_(\d+(?:\.\d+)?)', dirname)
+    if match:
+        return float(match.group(1)), float(match.group(2))
+    return None, None
+
+
+def _format_impc_metric_values(stats):
+    """Format the 9 metric values for a LaTeX table row.
+
+    Columns: R_succ, T_per_opt, T_trav, L_path, S_jerk, d_min, rho_vel, rho_acc, rho_jerk
+
+    When there are no successful runs, outputs {-} for all metrics except success rate.
     """
-    if not dynus_table_path.exists():
-        print(f"\nWarning: DYNUS table not found at {dynus_table_path}")
-        return None
-
-    # R^{succ} = success rate (goal_reached AND collision_free)
     success_rate = stats.get('success_rate', 0)
+    n_valid = stats.get('n_valid_runs', 0)
 
-    # Use MPC computation time (in ms) for "per opt time" column
+    if n_valid == 0:
+        dash = "{-}"
+        return f"{success_rate:.1f} & {dash} & {dash} & {dash} & {dash} & {dash} & {dash} & {dash} & {dash}"
+
     per_opt_time = stats.get('mpc_compute_time_mean_ms', stats.get('avg_replanning_time_mean', 0))
     travel_time = stats.get('flight_travel_time_mean', 0)
     path_length = stats.get('path_length_mean', 0)
     jerk_integral = stats.get('jerk_integral_mean', 0)
     min_distance = stats.get('min_distance_to_obstacles_mean', 0)
+    if min_distance is None:
+        min_distance = 0
     vel_viol = stats.get('vel_violation_rate', 0)
     acc_viol = stats.get('acc_violation_rate', 0)
-    jerk_viol = stats.get('jerk_violation_rate', 0)
+    jerk_str = "{-}"  # I-MPC has no jerk constraints
 
-    min_dist_str = f"{min_distance:.3f}" if isinstance(min_distance, (int, float)) and min_distance is not None else "N/A"
+    return (f"{success_rate:.1f} & {per_opt_time:.1f} & {travel_time:.1f} & "
+            f"{path_length:.1f} & {jerk_integral:.1f} & {min_distance:.3f} & "
+            f"{vel_viol:.1f} & {acc_viol:.1f} & {jerk_str}")
 
-    # 9 columns: Algorithm & R^succ & T^per_opt & T_trav & L_path & S_jerk & d_min & rho_vel & rho_acc & rho_jerk
-    impc_row = (f"      {algorithm_name} & {success_rate:.1f} & "
-                f"{per_opt_time:.1f} & {travel_time:.1f} & {path_length:.1f} & "
-                f"{jerk_integral:.1f} & {min_dist_str} & {vel_viol:.1f} & "
-                f"{acc_viol:.1f} & {jerk_viol:.1f} \\\\")
+
+def update_dynus_latex_table(stats: dict, dynus_table_path: Path, algorithm_name: str = "I-MPC"):
+    """Update DYNUS LaTeX table with a single I-MPC row (for single-dir analysis).
+
+    Uses the same in-place replacement as the grouped function: finds the I-MPC
+    row in the matching case group and replaces its metrics.
+    """
+    # Delegate to the grouped function with a single-element list
+    return update_dynus_latex_table_grouped([stats], dynus_table_path, group_name=algorithm_name)
+
+
+def update_dynus_latex_table_grouped(all_stats: list, dynus_table_path: Path,
+                                     group_name: str = "I-MPC"):
+    """Update I-MPC rows in the DYNUS LaTeX table (in-place replacement).
+
+    The table has case groups (Easy/Medium/Hard), each with algorithm rows:
+      \\multirow{4}{*}{Easy} & DYNUS  & metrics... \\\\
+                             & I-MPC  & metrics... \\\\
+                             & FAPP   & metrics... \\\\
+                             & EGO-v2 & metrics... \\\\
+
+    This function finds the I-MPC row in each case group and replaces its
+    metrics.  If no I-MPC row exists for a case, one is inserted after the
+    first algorithm row of that group.
+    """
+    if not dynus_table_path.exists():
+        print(f"\nWarning: DYNUS table not found at {dynus_table_path}")
+        return None
+
+    # Build difficulty -> stats map
+    stats_by_difficulty = {}
+    for s in all_stats:
+        diff = s.get('difficulty')
+        if diff:
+            stats_by_difficulty[diff] = s
+
+    if not stats_by_difficulty:
+        print("Warning: No difficulty-level stats to write")
+        return None
 
     with open(dynus_table_path, 'r') as f:
         lines = f.readlines()
 
-    new_lines = []
-    inserted = False
-    for i, line in enumerate(lines):
-        new_lines.append(line)
-        if "DYNUS &" in line and not inserted:
-            if i + 1 < len(lines) and ("I-MPC" in lines[i + 1] or "Intent-MPC" in lines[i + 1]):
-                new_lines.append(impc_row + "\n")
-                inserted = True
+    current_case = None
+    result = []
+    cases_updated = set()
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect case group start from \multirow{...}{Easy/Medium/Hard}
+        for case_name, case_key in [('Easy', 'easy'), ('Medium', 'medium'), ('Hard', 'hard')]:
+            if f'{{{case_name}}}' in stripped and '\\multirow' in stripped:
+                current_case = case_key
+                break
+
+        # Replace existing I-MPC row with actual metrics
+        if 'I-MPC' in stripped and '\\\\' in stripped:
+            if current_case and current_case in stats_by_difficulty:
+                stats = stats_by_difficulty[current_case]
+                metrics = _format_impc_metric_values(stats)
+                leading_ws = line[:len(line) - len(line.lstrip())]
+                result.append(f"{leading_ws}& I-MPC & {metrics} \\\\\n")
+                cases_updated.add(current_case)
             else:
-                new_lines.append(impc_row + "\n")
-                inserted = True
+                result.append(line)  # Keep placeholder as-is
+        else:
+            # At group boundary, insert I-MPC if missing for this case
+            if ('\\midrule' in stripped or '\\bottomrule' in stripped) and current_case:
+                if current_case in stats_by_difficulty and current_case not in cases_updated:
+                    stats = stats_by_difficulty[current_case]
+                    metrics = _format_impc_metric_values(stats)
+                    result.append(f"                            & I-MPC & {metrics} \\\\\n")
+                    cases_updated.add(current_case)
+                if '\\midrule' in stripped:
+                    current_case = None  # Reset at group boundary
+            result.append(line)
 
     with open(dynus_table_path, 'w') as f:
-        f.writelines(new_lines)
+        f.writelines(result)
 
-    print(f"\n✓ Updated DYNUS table: {dynus_table_path}")
-    print(f"  Added/updated {algorithm_name} row")
+    print(f"\nUpdated DYNUS table: {dynus_table_path}")
+    for case in sorted(cases_updated):
+        print(f"  {'Replaced' if case in cases_updated else 'Inserted'} I-MPC row for {case.capitalize()}")
+    missing = set(stats_by_difficulty.keys()) - cases_updated
+    for case in sorted(missing):
+        print(f"  WARNING: No {case.capitalize()} case group found in table")
     return dynus_table_path
+
+
+def update_dynus_latex_table_multi_config(configs: list, dynus_table_path: Path):
+    """Update DYNUS LaTeX table with multiple I-MPC configurations.
+
+    The table uses a 2-column algorithm format (12 columns total):
+      & I-MPC & \\multicolumn{1}{l}{$v_{\\max}$=3} & metrics... \\\\
+      & \\multicolumn{2}{c}{FAPP} & metrics... \\\\
+
+    Args:
+        configs: list of (display_label, vmax_label_or_None, {difficulty: stats}) tuples.
+            vmax_label is e.g. "$v_{\\max}$=3" or None for a single unnamed config.
+        dynus_table_path: Path to the LaTeX table file.
+
+    For each case group (Easy/Medium/Hard), this function:
+    1. Removes all existing I-MPC rows
+    2. Inserts new rows (one per config) at the same position
+    3. Updates the \\multirow{N} count to reflect the new row count
+    """
+    import re
+
+    if not dynus_table_path.exists():
+        print(f"\nWarning: DYNUS table not found at {dynus_table_path}")
+        return None
+
+    with open(dynus_table_path, 'r') as f:
+        lines = f.readlines()
+
+    current_case = None
+    result = []
+    impc_inserted = {}  # case_key -> True if we already inserted new rows
+
+    for line in lines:
+        stripped = line.strip()
+
+        # Detect case group from \multirow{N}{*}{Easy/Medium/Hard}
+        for case_name, case_key in [('Easy', 'easy'), ('Medium', 'medium'), ('Hard', 'hard')]:
+            if f'{{{case_name}}}' in stripped and '\\multirow' in stripped:
+                current_case = case_key
+                # Update \multirow{N} count: count non-I-MPC algorithms + new I-MPC configs
+                n_impc = sum(1 for _, _, sbd in configs if case_key in sbd)
+                # 3 = DYNUS + FAPP + EGO-v2 (existing non-I-MPC algorithms)
+                new_count = 3 + n_impc
+                line = re.sub(r'(\\multirow)\{(\d+)\}',
+                              r'\1{' + str(new_count) + '}', line)
+                break
+
+        # Handle existing I-MPC rows: remove them and insert new ones at first occurrence
+        if 'I-MPC' in stripped and '\\\\' in stripped:
+            if current_case and current_case not in impc_inserted:
+                # Insert all config rows in place of the first I-MPC row
+                leading_ws = line[:len(line) - len(line.lstrip())]
+                for display_label, vmax_label, stats_by_diff in configs:
+                    if current_case in stats_by_diff:
+                        stats = stats_by_diff[current_case]
+                        metrics = _format_impc_metric_values(stats)
+                        if vmax_label:
+                            # 2-column format: I-MPC | left-aligned vmax
+                            result.append(f"{leading_ws}& I-MPC & \\multicolumn{{1}}{{l}}{{{vmax_label}}} & {metrics} \\\\\n")
+                        else:
+                            # Single config: span both algorithm columns
+                            result.append(f"{leading_ws}& \\multicolumn{{2}}{{c}}{{I-MPC}} & {metrics} \\\\\n")
+                impc_inserted[current_case] = True
+            # Skip the original I-MPC line (whether first or subsequent)
+            continue
+
+        # Reset case tracking at group boundaries
+        if '\\midrule' in stripped:
+            current_case = None
+
+        result.append(line)
+
+    with open(dynus_table_path, 'w') as f:
+        f.writelines(result)
+
+    print(f"\nUpdated DYNUS table with multi-config I-MPC: {dynus_table_path}")
+    for case_key in ['easy', 'medium', 'hard']:
+        if case_key in impc_inserted:
+            labels = [dl for dl, _, sbd in configs if case_key in sbd]
+            print(f"  {case_key.capitalize()}: {len(labels)} I-MPC rows ({', '.join(labels)})")
+    return dynus_table_path
+
+
+def analyze_multi_config(config_dirs: list, dynus_table_path: Path,
+                         skip_collision_postprocess: bool):
+    """Analyze multiple configuration directories, each containing easy/medium/hard benchmarks.
+
+    Each config_dir is expected to be named like 'max_vel_3_acc_3' and contain
+    subdirectories like 'easy_benchmark_TIMESTAMP/', 'medium_benchmark_TIMESTAMP/', etc.
+    """
+    all_configs = []  # List of (label, {difficulty: stats})
+
+    for config_dir in config_dirs:
+        config_dir = Path(config_dir)
+        max_vel, max_acc = parse_config_from_dirname(config_dir.name)
+
+        if max_vel is not None:
+            label = f"I-MPC {_format_vmax_label(max_vel)}"
+        else:
+            label = f"I-MPC ({config_dir.name})"
+
+        print(f"\n{'#' * 80}")
+        print(f"# CONFIG: {config_dir.name} -> {label}")
+        print(f"{'#' * 80}")
+
+        # Find difficulty subdirectories
+        stats_by_diff = {}
+        for diff in ['easy', 'medium', 'hard']:
+            candidates = sorted(config_dir.glob(f"{diff}_benchmark_*"))
+            if candidates:
+                benchmark_dir = candidates[-1]  # Latest
+                stats = analyze_single(benchmark_dir, 'I-MPC', dynus_table_path,
+                                       skip_collision_postprocess,
+                                       skip_table_update=True)
+                if stats:
+                    stats['difficulty'] = diff
+                    stats['max_vel'] = max_vel
+                    stats['max_acc'] = max_acc
+                    stats_by_diff[diff] = stats
+
+        if stats_by_diff:
+            vmax_label = _format_vmax_label(max_vel) if max_vel is not None else None
+            all_configs.append((label, vmax_label, stats_by_diff))
+
+    if not all_configs:
+        print("\nNo results to summarize.")
+        return
+
+    # If only one config, drop the vmax label (span both algorithm columns)
+    if len(all_configs) == 1:
+        all_configs = [("I-MPC", None, all_configs[0][2])]
+
+    # Update DYNUS LaTeX table with all configs
+    update_dynus_latex_table_multi_config(all_configs, Path(dynus_table_path))
+
+    # Print combined summary
+    print(f"\n{'=' * 80}")
+    print("MULTI-CONFIG SWEEP SUMMARY")
+    print("=" * 80)
+    header = f"{'Config':<25} {'Case':<8} {'R_succ':>7} {'T_opt':>6} {'T_trav':>7} {'L_path':>7} {'S_jerk':>7} {'d_min':>7} {'rho_v':>6}"
+    print(header)
+    print("-" * len(header))
+    for label, vmax_label, stats_by_diff in all_configs:
+        for diff in ['easy', 'medium', 'hard']:
+            if diff in stats_by_diff:
+                s = stats_by_diff[diff]
+                r_succ = s.get('success_rate', 0)
+                t_opt = s.get('mpc_compute_time_mean_ms', 0)
+                t_trav = s.get('flight_travel_time_mean', 0)
+                l_path = s.get('path_length_mean', 0)
+                s_jerk = s.get('jerk_integral_mean', 0)
+                d_min_val = s.get('min_distance_to_obstacles_mean', None)
+                d_min = f"{d_min_val:.3f}" if d_min_val is not None else "N/A"
+                rho_v = s.get('vel_violation_rate', 0)
+                print(f"{label:<25} {diff.capitalize():<8} {r_succ:>6.1f}% {t_opt:>6.1f} {t_trav:>7.1f} {l_path:>7.1f} {s_jerk:>7.1f} {d_min:>7} {rho_v:>5.1f}%")
+
+
+def detect_acceleration_weight(data_dir: Path, df):
+    """Auto-detect acceleration_weight from CSV column or directory name"""
+    if 'acceleration_weight' in df.columns:
+        wt = df['acceleration_weight'].dropna().unique()
+        if len(wt) == 1:
+            return float(wt[0])
+
+    # Try to parse from directory name: benchmark_wa<value>_<timestamp>
+    import re
+    match = re.search(r'_wa([\d.]+)', data_dir.name)
+    if match:
+        return float(match.group(1))
+
+    return None
+
+
+def detect_max_vel(data_dir: Path, df):
+    """Auto-detect max_vel from CSV column or directory name"""
+    if 'max_vel' in df.columns:
+        mv = df['max_vel'].dropna().unique()
+        if len(mv) == 1:
+            return float(mv[0])
+
+    # Try to parse from directory name: benchmark_vmax<value>_<timestamp>
+    import re
+    match = re.search(r'_vmax([\d.]+)', data_dir.name)
+    if match:
+        return float(match.group(1))
+
+    return None
+
+
+def detect_difficulty(data_dir: Path, df):
+    """Auto-detect difficulty from CSV column or directory name.
+
+    Returns one of: 'easy', 'medium', 'hard', or None.
+    """
+    # Check CSV column first
+    if 'difficulty' in df.columns:
+        diff = df['difficulty'].dropna().unique()
+        if len(diff) == 1 and diff[0] in ('easy', 'medium', 'hard'):
+            return str(diff[0])
+
+    # Try to parse from directory name: {difficulty}_benchmark_{timestamp}
+    import re
+    match = re.match(r'(easy|medium|hard)_benchmark_', data_dir.name)
+    if match:
+        return match.group(1)
+
+    # Infer from num_obstacles
+    obs_to_diff = {50: 'easy', 100: 'medium', 200: 'hard'}
+    if 'num_obstacles' in df.columns:
+        obs = df['num_obstacles'].dropna().unique()
+        if len(obs) == 1:
+            return obs_to_diff.get(int(obs[0]))
+
+    return None
+
+
+def format_weight_latex(value: float) -> str:
+    """Format weight value as \\num{eN} for LaTeX (e.g. 10.0 -> \\num{e1}, 1000.0 -> \\num{e3})"""
+    import math
+    exp = math.log10(value)
+    if exp == int(exp):
+        return f'\\num{{e{int(exp)}}}'
+    return str(value)
+
+
+def analyze_single(data_dir: Path, algorithm_name: str, dynus_table_path: Path,
+                   skip_collision_postprocess: bool, acceleration_weight: float = None,
+                   skip_table_update: bool = False):
+    """Run analysis on a single benchmark data directory. Returns stats dict."""
+    print("=" * 80)
+    print(f"INTENT-MPC BENCHMARK ANALYSIS: {data_dir.name}")
+    print("=" * 80)
+
+    if not data_dir.exists():
+        print(f"ERROR: Directory not found: {data_dir}")
+        return None
+
+    df = load_benchmark_data(data_dir)
+    print(f"  Trials: {len(df)}\n")
+
+    # Auto-detect acceleration_weight if not explicitly provided
+    if acceleration_weight is None:
+        acceleration_weight = detect_acceleration_weight(data_dir, df)
+
+    # Auto-detect difficulty
+    difficulty = detect_difficulty(data_dir, df)
+
+    # Auto-name algorithm (keep generic for grouped table)
+    if difficulty is not None:
+        print(f"  Auto-detected difficulty={difficulty}")
+    elif acceleration_weight is not None and algorithm_name == 'I-MPC':
+        algorithm_name = f'I-MPC, $w_a={format_weight_latex(acceleration_weight)}$'
+        print(f"  Auto-detected acceleration_weight={acceleration_weight}, algorithm_name={algorithm_name}")
+
+    if not skip_collision_postprocess:
+        df = postprocess_collisions(data_dir, df)
+
+    # Recompute per-timestep Linf violations from bags if CSV lacks those columns
+    df = recompute_violations_from_bags(data_dir, df)
+
+    print("\nComputing statistics...")
+    stats = compute_statistics(df)
+    stats['algorithm_name'] = algorithm_name
+    stats['acceleration_weight'] = acceleration_weight
+    stats['difficulty'] = difficulty
+
+    print_statistics(stats)
+
+    # Save summary CSV
+    summary_csv = data_dir / "benchmark_summary.csv"
+    try:
+        pd.DataFrame([stats]).to_csv(summary_csv, index=False)
+        print(f"\n✓ Summary saved: {summary_csv}")
+    except PermissionError:
+        print(f"\n  (Skipped writing {summary_csv} - permission denied)")
+
+    # Update DYNUS LaTeX table (skip when called from analyze_multi)
+    if not skip_table_update:
+        update_dynus_latex_table(stats, dynus_table_path, algorithm_name)
+
+    return stats
+
+
+def analyze_multi(data_dirs: list, algorithm_name: str, dynus_table_path: Path,
+                  skip_collision_postprocess: bool):
+    """Analyze multiple benchmark directories and print a combined summary table."""
+    all_stats = []
+    for data_dir in data_dirs:
+        data_dir = Path(data_dir)
+        stats = analyze_single(data_dir, algorithm_name, dynus_table_path,
+                               skip_collision_postprocess,
+                               skip_table_update=True)
+        if stats is not None:
+            all_stats.append(stats)
+        print()
+
+    if not all_stats:
+        print("No results to summarize.")
+        return
+
+    # Update DYNUS LaTeX table with grouped multirow format
+    update_dynus_latex_table_grouped(all_stats, Path(dynus_table_path), group_name='I-MPC')
+
+    # Print combined summary table
+    print("\n" + "=" * 80)
+    print("SWEEP SUMMARY")
+    print("=" * 80)
+    header = f"{'Case':<10} {'R_succ':>7} {'T_trav':>7} {'L_path':>7} {'S_jerk':>7} {'d_min':>7} {'rho_v':>6} {'rho_a':>6}"
+    print(header)
+    print("-" * len(header))
+    for s in all_stats:
+        diff = s.get('difficulty', '')
+        case_label = diff.capitalize() if diff else s.get('algorithm_name', 'I-MPC')
+        r_succ = s.get('success_rate', 0)
+        t_trav = s.get('flight_travel_time_mean', 0)
+        l_path = s.get('path_length_mean', 0)
+        s_jerk = s.get('jerk_integral_mean', 0)
+        d_min_val = s.get('min_distance_to_obstacles_mean', None)
+        d_min = f"{d_min_val:.3f}" if d_min_val is not None else "N/A"
+        rho_v = s.get('vel_violation_rate', 0)
+        rho_a = s.get('acc_violation_rate', 0)
+        print(f"{case_label:<10} {r_succ:>6.1f}% {t_trav:>7.1f} {l_path:>7.1f} {s_jerk:>7.1f} {d_min:>7} {rho_v:>5.1f}% {rho_a:>5.1f}%")
 
 
 def main():
@@ -508,8 +1244,15 @@ def main():
         epilog=__doc__
     )
 
-    parser.add_argument('--data-dir', type=str, required=True,
-                        help='Path to benchmark data directory')
+    parser.add_argument('--data-dir', type=str,
+                        help='Path to single benchmark data directory')
+    parser.add_argument('--multi-dir', type=str, nargs='+',
+                        help='Multiple benchmark data directories for sweep analysis')
+    parser.add_argument('--config-dirs', type=str, nargs='+',
+                        help='Top-level config directories (e.g., data/max_vel_3_acc_3 data/max_vel_5_acc_20). '
+                             'Each should contain {easy,medium,hard}_benchmark_* subdirs.')
+    parser.add_argument('--acceleration-weight', type=float, default=None,
+                        help='Override acceleration_weight (auto-detected from CSV/dir name if omitted)')
     parser.add_argument('--algorithm-name', type=str, default='I-MPC',
                         help='Algorithm name for LaTeX table (default: I-MPC)')
     parser.add_argument('--dynus-table-path', type=str,
@@ -520,46 +1263,18 @@ def main():
 
     args = parser.parse_args()
 
-    print("="*80)
-    print("INTENT-MPC COMPLETE BENCHMARK ANALYSIS")
-    print("="*80)
-
-    data_dir = Path(args.data_dir)
-    if not data_dir.exists():
-        print(f"ERROR: Directory not found: {data_dir}")
-        sys.exit(1)
-
-    # Load data
-    df = load_benchmark_data(data_dir)
-    print(f"  Trials: {len(df)}\n")
-
-    # Post-process collisions from rosbags
-    if not args.skip_collision_postprocess:
-        df = postprocess_collisions(data_dir, df)
-
-    # Compute statistics
-    print("\nComputing statistics...")
-    stats = compute_statistics(df)
-
-    # Print results
-    print_statistics(stats)
-
-    # Save summary CSV
-    summary_csv = data_dir / "benchmark_summary.csv"
-    pd.DataFrame([stats]).to_csv(summary_csv, index=False)
-    print(f"\n✓ Summary saved: {summary_csv}")
-
-    # Update DYNUS LaTeX table
-    update_dynus_latex_table(stats, Path(args.dynus_table_path), args.algorithm_name)
-
-    print("\n" + "="*80)
-    print("ANALYSIS COMPLETE")
-    print("="*80)
-    print(f"\nGenerated files:")
-    print(f"  1. {data_dir / 'benchmark_intent_mpc_postprocessed.csv'} (if rosbags processed)")
-    print(f"  2. {summary_csv}")
-    print(f"  3. {args.dynus_table_path} (updated)")
-    print()
+    if args.config_dirs:
+        analyze_multi_config(args.config_dirs, Path(args.dynus_table_path),
+                             args.skip_collision_postprocess)
+    elif args.multi_dir:
+        analyze_multi(args.multi_dir, args.algorithm_name,
+                      Path(args.dynus_table_path), args.skip_collision_postprocess)
+    elif args.data_dir:
+        analyze_single(Path(args.data_dir), args.algorithm_name,
+                       Path(args.dynus_table_path), args.skip_collision_postprocess,
+                       acceleration_weight=args.acceleration_weight)
+    else:
+        parser.error("Either --data-dir, --multi-dir, or --config-dirs is required")
 
 
 if __name__ == '__main__':

@@ -2,6 +2,10 @@
   <!-- Intent-MPC Navigation Only (assumes simulator already running) -->
   <!-- This is the equivalent of intent_mpc_demo.launch but for DYNUS obstacles -->
 
+  <arg name="acceleration_weight" default="10.0"/>
+  <arg name="max_vel" default="5.0"/>
+  <arg name="max_acc" default="20.0"/>
+
   <rosparam file="$(find tracking_controller)/cfg/controller_param.yaml" ns="controller"/>
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/fake_detector_param.yaml"/>
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/flight_base.yaml" ns="autonomous_flight"/>
@@ -9,6 +13,11 @@
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/mapping_param.yaml" ns="/dynamic_map"/>
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/dynamic_detector_param.yaml" ns="/onboard_detector"/>
   <rosparam file="$(find autonomous_flight)/cfg/mpc_navigation/predictor_param.yaml" ns="/dynamic_predictor"/>
+
+  <!-- Override params (after yaml load) for sweep benchmarks -->
+  <param name="mpc_planner/acceleration_weight" value="$(arg acceleration_weight)" type="double"/>
+  <param name="autonomous_flight/desired_velocity" value="$(arg max_vel)" type="double"/>
+  <param name="autonomous_flight/desired_acceleration" value="$(arg max_acc)" type="double"/>
 
   <!-- Intent-MPC Nodes (detector/predictor are C++ libraries inside mpc_navigation, not separate nodes) -->
   <node pkg="tracking_controller" type="tracking_controller_node" name="tracking_controller_node" output="screen"/>

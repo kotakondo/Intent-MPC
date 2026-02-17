@@ -326,24 +326,31 @@ namespace AutoFlight{
 					computeTimeMsg.data = this->mpc_->getLastQpSolveTime();
 					this->mpcComputeTimePub_.publish(computeTimeMsg);
 
+					double solveTime = (ros::Time::now() - trajStartTime).toSec();
 					nav_msgs::Path mpcTraj;
 
 					if (newTrajReturn){
 						this->trajStartTime_ = trajStartTime;
-						// Trust MPC planner - it already handles obstacle avoidance
 						this->mpc_->getTrajectory(mpcTraj);
 						this->mpcTrajMsg_ = mpcTraj;
 						this->mpcTrajectoryReady_ = true;
 						this->mpcFirstTime_ = false;
 
-						// Optional: Log collisions for monitoring
+						if (mpcTraj.poses.size() > 0){
+							auto& pN = mpcTraj.poses.back().pose.position;
+							ROS_INFO_THROTTLE(2.0, "[MPC] OK solve=%.1fms pos=[%.1f,%.1f,%.1f] traj_end=[%.1f,%.1f,%.1f] pts=%zu",
+								solveTime*1000, currPos(0), currPos(1), currPos(2),
+								pN.x, pN.y, pN.z, mpcTraj.poses.size());
+						}
+
 						if (this->mpcHasCollision() or this->hasDynamicCollision()){
 							cout << "[AutoFlight]: Collision in plan, but executing (MPC handles avoidance)." << endl;
 						}
 					}
 					else if (not this->mpcFirstTime_){
-						// Continue with previous MPC trajectory
 						this->mpcTrajectoryReady_ = true;
+						ROS_WARN_THROTTLE(1.0, "[MPC] SOLVER FAILED (reusing prev traj) solve=%.1fms pos=[%.1f,%.1f,%.1f]",
+							solveTime*1000, currPos(0), currPos(1), currPos(2));
 
 						if (this->mpcHasCollision() or this->hasDynamicCollision()){
 							cout << "[AutoFlight]: Collision detected, continuing with MPC." << endl;
@@ -351,7 +358,9 @@ namespace AutoFlight{
 					}
 					else{
 						this->mpcTrajectoryReady_ = false;
-						this->stop();	
+						this->stop();
+						ROS_ERROR("[MPC] FIRST SOLVE FAILED - STOPPING pos=[%.1f,%.1f,%.1f]",
+							currPos(0), currPos(1), currPos(2));
 					}
 				}
 			}

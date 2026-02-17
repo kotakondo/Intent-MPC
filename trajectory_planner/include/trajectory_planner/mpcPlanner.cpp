@@ -142,6 +142,34 @@ namespace trajPlanner{
 			cout << this->hint_ << ": Dynamic slack variable is set to: " << this->dynamicSlack_ << endl;
 		}
 
+		if (not this->nh_.getParam(this->ns_ + "/position_weight", this->positionWeight_)){
+			this->positionWeight_ = 1000.0;
+		}
+		else{
+			cout << this->hint_ << ": Position weight: " << this->positionWeight_ << endl;
+		}
+
+		if (not this->nh_.getParam(this->ns_ + "/velocity_weight", this->velocityWeight_)){
+			this->velocityWeight_ = 0.0;
+		}
+		else{
+			cout << this->hint_ << ": Velocity weight: " << this->velocityWeight_ << endl;
+		}
+
+		if (not this->nh_.getParam(this->ns_ + "/acceleration_weight", this->accelerationWeight_)){
+			this->accelerationWeight_ = 10.0;
+		}
+		else{
+			cout << this->hint_ << ": Acceleration weight: " << this->accelerationWeight_ << endl;
+		}
+
+		if (not this->nh_.getParam(this->ns_ + "/solver_time_limit", this->solverTimeLimit_)){
+			this->solverTimeLimit_ = 0.05;
+		}
+		else{
+			cout << this->hint_ << ": Solver time limit: " << this->solverTimeLimit_ << "s" << endl;
+		}
+
 	}
 
 	void mpcPlanner::initModules(){
@@ -422,20 +450,32 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
     solver.data()->setNumberOfVariables(numStates * (mpcWindow + 1) + numControls * mpcWindow);
     // solver.data()->setNumberOfConstraints(numStates * (mpcWindow + 1) + 3*(mpcWindow+1)+ numControls * mpcWindow + numOb*mpcWindow);
     solver.data()->setNumberOfConstraints(numStates * (mpcWindow + 1)+numStates * (mpcWindow + 1)+numControls*mpcWindow + numHalfSpace * mpcWindow +numObs*mpcWindow);
-	if (!solver.data()->setHessianMatrix(hessian))
+	if (!solver.data()->setHessianMatrix(hessian)){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] setHessianMatrix failed");
         return 0;
-    if (!solver.data()->setGradient(gradient))
+    }
+    if (!solver.data()->setGradient(gradient)){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] setGradient failed");
         return 0;
-    if (!solver.data()->setLinearConstraintsMatrix(constraintMatrix))
+    }
+    if (!solver.data()->setLinearConstraintsMatrix(constraintMatrix)){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] setLinearConstraintsMatrix failed");
         return 0;
-    if (!solver.data()->setLowerBound(lowerBound))
+    }
+    if (!solver.data()->setLowerBound(lowerBound)){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] setLowerBound failed");
         return 0;
-    if (!solver.data()->setUpperBound(upperBound))
+    }
+    if (!solver.data()->setUpperBound(upperBound)){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] setUpperBound failed");
         return 0;
+    }
 
     // instantiate the solver
-    if (!solver.initSolver())
+    if (!solver.initSolver()){
+        ROS_WARN_THROTTLE(1.0, "[MPC-QP] initSolver failed");
         return 0;
+    }
     // controller input and QPSolution vector
     // Eigen::Vector4d ctr;
     Eigen::VectorXd QPSolution;
@@ -447,7 +487,7 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	dualVariable.setZero(numStates * (mpcWindow + 1)+numStates * (mpcWindow + 1)+numControls*mpcWindow + numHalfSpace * mpcWindow +numObs*mpcWindow);
 	primalVariable.setZero(numStates * (mpcWindow + 1) + numControls * mpcWindow);
 	for (int i=0;i<mpcWindow+1;i++){
-		if (not this->firstTime_){
+		if (not this->firstTime_ && i < (int)this->currentStatesSol_.size()){
 			primalVariable.block(numStates*i,0,numStates,1) = this->currentStatesSol_[i];
 		}
 		else{
@@ -457,7 +497,7 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 		}
 	}
 	for(int i=0;i<mpcWindow;i++){
-		if (not this->firstTime_){
+		if (not this->firstTime_ && i < (int)this->currentControlsSol_.size()){
 			primalVariable.block(numStates*(mpcWindow+1)+numControls*i, 0, numControls, 1) = this->currentControlsSol_[i];
 		}
 		else{
@@ -470,8 +510,12 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	// }
 	// solve the QP problem - TIME THIS FOR CORE OPTIMIZATION METRIC
 	ros::Time qpSolveStart = ros::Time::now();
-	if (solver.solveProblem() != OsqpEigen::ErrorExitFlag::NoError)
+	auto solveFlag = solver.solveProblem();
+	if (solveFlag != OsqpEigen::ErrorExitFlag::NoError){
+		ROS_WARN_THROTTLE(1.0, "[MPC-QP] solveProblem failed (flag=%d) pos=[%.1f,%.1f,%.1f] numObs=%d",
+			(int)solveFlag, this->currPos_(0), this->currPos_(1), this->currPos_(2), numObs);
 		return 0;
+	}
 	ros::Time qpSolveEnd = ros::Time::now();
 	this->lastQpSolveTime_ = (qpSolveEnd - qpSolveStart).toSec();
 
@@ -567,7 +611,7 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 				std::vector<Eigen::VectorXd> controlsSol;
 				double time = (ros::Time::now()-startTime).toSec();
 				if (time<0.15){
-					double timeLimit = max(0.05 - time, 0.05);  // 50ms minimum for solver convergence
+					double timeLimit = max(this->solverTimeLimit_ - time, this->solverTimeLimit_);
 					successSolve = this->solveTraj(staticObstacles, obstaclesPosComb[i], obstaclesSizeComb[i], statesSol, controlsSol, xRef, timeLimit);
 					if (successSolve){
 						candidateStatesTemp.push_back(statesSol);
@@ -629,6 +673,17 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 			}
 		}
 		else{
+			if (this->currentStatesSol_.size() < 2){
+				// Not enough states for direction-based scoring, fall back to distance
+				for (int i=0;i<int(this->dynamicObstaclesPos_.size());i++){
+					double dist = (this->currPos_-this->dynamicObstaclesPos_[i][0]).norm();
+					if (dist < minDist){
+						minDist = dist;
+						obIdx = i;
+					}
+				}
+				return;
+			}
 			for (int i=0;i<int(this->dynamicObstaclesPos_.size());i++){
 				double dist = 0;
 				for (int j=0;j<int(this->currentStatesSol_.size()/3);j++){
@@ -724,19 +779,21 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 
 	double mpcPlanner::getConsistencyScore(const std::vector<Eigen::VectorXd> &state){
 		int numConsistencyStep = 10;
-		if (this->firstTime_){
+		if (this->firstTime_ || this->currentStatesSol_.empty() || state.empty()){
 			return 0;
 		}
 		else{
+			int maxStep = std::min(numConsistencyStep, std::min((int)this->currentStatesSol_.size(), (int)state.size()));
+			if (maxStep == 0) return 0;
 			double totalDist = 0;
-			for (int i=0;i<numConsistencyStep;i++){
+			for (int i=0;i<maxStep;i++){
 				Eigen::Vector3d prevPos;
 				prevPos<<this->currentStatesSol_[i](0), this->currentStatesSol_[i](1), this->currentStatesSol_[i](2);
 				Eigen::Vector3d pos;
 				pos<<state[i](0), state[i](1), state[i](2);
 				totalDist += (prevPos-pos).norm();
 			}
-			totalDist /= numConsistencyStep;
+			totalDist /= maxStep;
 			totalDist = max(totalDist, 0.1);
 			return totalDist;
 		}
@@ -846,6 +903,12 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 
 	void mpcPlanner::setInequalityConstraints(Eigen::Matrix<double, numStates, 1> &xMax, Eigen::Matrix<double, numStates, 1> &xMin,
 								Eigen::Matrix<double, numControls, 1> &uMax, Eigen::Matrix<double, numControls, 1> &uMin){
+		// DEBUG: Print velocity/acceleration limits
+		static bool printed = false;
+		if (!printed) {
+			std::cout << "[MPC DEBUG] maxVel_=" << this->maxVel_ << " m/s, maxAcc_=" << this->maxAcc_ << " m/s^2" << std::endl;
+			printed = true;
+		}
 		// state bound (x, y, z, vx, vy, vz, ?, ?)
 		xMin <<  -INFINITY, this->yRangeMin_, this->zRangeMin_, -this->maxVel_, -this->maxVel_, -this->maxVel_, -INFINITY, -INFINITY;
 		xMax << INFINITY, this->yRangeMax_, this->zRangeMax_, this->maxVel_, this->maxVel_, this->maxVel_, INFINITY, INFINITY;
@@ -860,8 +923,11 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 
 
 	void mpcPlanner::setWeightMatrices(Eigen::DiagonalMatrix<double,numStates> &Q, Eigen::DiagonalMatrix<double,numControls> &R){
-		Q.diagonal() << 1000.0, 1000.0, 1000.0, 0, 0, 0, 100.0, 1000.0;
-		R.diagonal() << 10.0, 10.0, 10.0, 1.0, 1.0;
+		Q.diagonal() << this->positionWeight_, this->positionWeight_, this->positionWeight_,
+		                this->velocityWeight_, this->velocityWeight_, this->velocityWeight_,
+		                100.0, 1000.0;
+		R.diagonal() << this->accelerationWeight_, this->accelerationWeight_, this->accelerationWeight_,
+		                1.0, 1.0;
 	}
 	void mpcPlanner::castMPCToQPHessian(const Eigen::DiagonalMatrix<double,numStates> &Q, const Eigen::DiagonalMatrix<double,numControls> &R, int mpcWindow, Eigen::SparseMatrix<double>& hessianMatrix){
 		hessianMatrix.resize(numStates * (mpcWindow + 1) + numControls * mpcWindow,
@@ -1131,12 +1197,21 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 
 	void mpcPlanner::getReferenceTraj(std::vector<Eigen::Vector3d>& referenceTraj){
+		if (this->inputTraj_.empty()){
+			ROS_WARN_THROTTLE(1.0, "[MPC] getReferenceTraj called with empty inputTraj");
+			referenceTraj.clear();
+			for (int i=0; i<this->horizon_; ++i){
+				referenceTraj.push_back(this->currPos_);
+			}
+			return;
+		}
 		// find the nearest position in the reference trajectory
 		double leastDist = std::numeric_limits<double>::max();
 		double maxForwardTime = 3.0; // # 3.0s ahead
 		int maxForwardIdx = maxForwardTime/this->ts_;
 		int startIdx = this->lastRefStartIdx_;
-		for (int i=this->lastRefStartIdx_; i<this->lastRefStartIdx_+maxForwardIdx; ++i){
+		int searchEnd = std::min(this->lastRefStartIdx_+maxForwardIdx, (int)this->inputTraj_.size());
+		for (int i=this->lastRefStartIdx_; i<searchEnd; ++i){
 			double dist = (this->currPos_ - this->inputTraj_[i]).norm();
 			if (dist < leastDist){
 				leastDist = dist;
@@ -1180,15 +1255,16 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 
 	Eigen::Vector3d mpcPlanner::getPos(double t){
-		// int idx = int(t/this->ts_);
-		// idx = std::max(0, std::min(idx, this->horizon_-1));
-		// DVector states = this->currentStatesSol_.getVector(idx);
-		// Eigen::Vector3d p (states(0), states(1), states(2));
+		if (this->currentStatesSol_.empty()){
+			ROS_WARN_THROTTLE(1.0, "[MPC] getPos called with empty solution, returning currPos");
+			return this->currPos_;
+		}
 		int idx = floor(t/this->ts_);
 		double dt = t-idx*this->ts_;
-		idx = std::max(0, std::min(idx, this->horizon_-1));
+		idx = std::max(0, std::min(idx, (int)this->currentStatesSol_.size()-1));
+		int nextIdx = std::min(idx+1, (int)this->currentStatesSol_.size()-1);
 		Eigen::VectorXd states = this->currentStatesSol_[idx];
-		Eigen::VectorXd nextStates = this->currentStatesSol_[std::min(idx+1, this->horizon_-1)];
+		Eigen::VectorXd nextStates = this->currentStatesSol_[nextIdx];
 		Eigen::Vector3d p;
 		p(0) = states(0)+(nextStates(0)-states(0))/this->ts_*dt;
 		p(1) = states(1)+(nextStates(1)-states(1))/this->ts_*dt;
@@ -1197,15 +1273,15 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 
 	Eigen::Vector3d mpcPlanner::getVel(double t){
-		// int idx = int(t/this->ts_);
-		// idx = std::max(0, std::min(idx, this->horizon_-1));
-		// DVector states = this->currentStatesSol_.getVector(idx);
-		// Eigen::Vector3d v (states(3), states(4), states(5));
+		if (this->currentStatesSol_.empty()){
+			return Eigen::Vector3d::Zero();
+		}
 		int idx = floor(t/this->ts_);
 		double dt = t-idx*this->ts_;
-		idx = std::max(0, std::min(idx, this->horizon_-1));
+		idx = std::max(0, std::min(idx, (int)this->currentStatesSol_.size()-1));
+		int nextIdx = std::min(idx+1, (int)this->currentStatesSol_.size()-1);
 		Eigen::VectorXd states = this->currentStatesSol_[idx];
-		Eigen::VectorXd nextStates = this->currentStatesSol_[std::min(idx+1, this->horizon_-1)];
+		Eigen::VectorXd nextStates = this->currentStatesSol_[nextIdx];
 		Eigen::Vector3d v;
 		v(0) = states(3)+(nextStates(3)-states(3))/this->ts_*dt;
 		v(1) = states(4)+(nextStates(4)-states(4))/this->ts_*dt;
@@ -1214,15 +1290,15 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 
 	Eigen::Vector3d mpcPlanner::getAcc(double t){
-		// int idx = int(t/this->ts_);
-		// idx = std::max(0, std::min(idx, this->horizon_-1));
-		// DVector states = this->currentControlsSol_.getVector(idx);
-		// Eigen::Vector3d a (states(0), states(1), states(2));
+		if (this->currentControlsSol_.empty()){
+			return Eigen::Vector3d::Zero();
+		}
 		int idx = floor(t/this->ts_);
 		double dt = t-idx*this->ts_;
-		idx = std::max(0, std::min(idx, this->horizon_-2));
+		idx = std::max(0, std::min(idx, (int)this->currentControlsSol_.size()-1));
+		int nextIdx = std::min(idx+1, (int)this->currentControlsSol_.size()-1);
 		Eigen::VectorXd states = this->currentControlsSol_[idx];
-		Eigen::VectorXd nextStates = this->currentControlsSol_[std::min(idx+1, this->horizon_-2)];
+		Eigen::VectorXd nextStates = this->currentControlsSol_[nextIdx];
 		Eigen::Vector3d a;
 		a(0) = states(0)+(nextStates(0)-states(0))/this->ts_*dt;
 		a(1) = states(1)+(nextStates(1)-states(1))/this->ts_*dt;
@@ -1231,11 +1307,15 @@ bool mpcPlanner::solveTraj(const std::vector<staticObstacle> &staticObstacles, c
 	}
 
 	Eigen::Vector3d mpcPlanner::getRef(double t){
+		if (this->ref_.empty()){
+			return this->currPos_;
+		}
 		int idx = floor(t/this->ts_);
 		double dt = t-idx*this->ts_;
-		idx = std::max(0, std::min(idx, this->horizon_-1));
+		idx = std::max(0, std::min(idx, (int)this->ref_.size()-1));
+		int nextIdx = std::min(idx+1, (int)this->ref_.size()-1);
 		Eigen::MatrixXd states = this->ref_[idx];
-		Eigen::MatrixXd nextStates = this->ref_[std::min(idx+1, this->horizon_-1)];
+		Eigen::MatrixXd nextStates = this->ref_[nextIdx];
 		Eigen::Vector3d r;
 		r(0) = states(0,0)+(nextStates(0,0)-states(0,0))/this->ts_*dt;
 		r(1) = states(1,0)+(nextStates(1,0)-states(1,0))/this->ts_*dt;

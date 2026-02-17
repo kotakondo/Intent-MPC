@@ -26,11 +26,17 @@ mpc_planner/horizon: 30
 mpc_planner/y_range_min: -5.0  # Corridor bounds (tighter than obstacle field)
 mpc_planner/y_range_max: 5.0
 mpc_planner/z_range_min: 0.5   # Match obstacle z_min
-mpc_planner/z_range_max: 4.5   # Match obstacle z_max 
+mpc_planner/z_range_max: 4.5   # Match obstacle z_max
 mpc_planner/static_safety_dist: 0.8
-mpc_planner/dynamic_safety_dist: 0.6
+mpc_planner/dynamic_safety_dist: 1.5
 mpc_planner/static_constraint_slack_ratio: 0.01
 mpc_planner/dynamic_constraint_slack_ratio: 0.2 
+# MPC cost weights
+mpc_planner/position_weight: 1000.0
+mpc_planner/velocity_weight: 0.0
+mpc_planner/acceleration_weight: 10.0
+# MPC solver
+mpc_planner/solver_time_limit: 0.05  # seconds (default: 50ms)
 # MPC clustering params
 mpc_planner/cloud_res: 0.2
 mpc_planner/local_cloud_region_x: 6.0 # forward

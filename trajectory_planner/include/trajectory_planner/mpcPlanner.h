@@ -88,6 +88,10 @@ namespace trajPlanner{
 		double staticSafetyDist_;
 		double staticSlack_;
 		double dynamicSlack_;
+		double positionWeight_;
+		double velocityWeight_;
+		double accelerationWeight_;
+		double solverTimeLimit_;
 
 		// clustering params
 		double cloudRes_;

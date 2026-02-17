@@ -982,114 +982,266 @@ Or view in the repository at:
 
 ## Benchmarking
 
-Intent-MPC includes a comprehensive benchmarking system for evaluating performance with dynamic obstacles. The benchmark format is compatible with DYNUS for direct comparison.
+Intent-MPC includes a benchmarking system for evaluating performance with dynamic obstacles. The benchmark format is compatible with DYNUS for direct comparison across algorithms (DYNUS, I-MPC, FAPP, EGO-v2).
 
-### Quick Start
-
-Run 20 benchmark trials with default configuration:
+### Setup (one-time)
 
 ```bash
-cd docker
-make run-benchmark NUM_TRIALS=20 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7 SEED_START=0
+# 1. Allow Docker GUI access
+xhost +local:docker
+
+# 2. Build Docker image
+cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
+make build
 ```
 
-Results are saved to `Intent-MPC/data/` and persist on the host machine.
+**Rebuild required** only when C++ source files change. YAML config and Python script changes are picked up automatically via volume mounts.
 
-### Analyze Results
+### Running Benchmarks
+
+Benchmarks are organized by **velocity/acceleration configuration** and **difficulty level**.
+
+| Difficulty | Num Obstacles | Dynamic Ratio |
+|------------|--------------|---------------|
+| easy       | 50           | 0.65          |
+| medium     | 100          | 0.65          |
+| hard       | 200          | 0.65          |
+
+| Config | MAX_VEL | MAX_ACC |
+|--------|---------|---------|
+| 1.5:1.5 | 1.5 m/s | 1.5 m/s^2 |
+| 3:3     | 3.0 m/s | 3.0 m/s^2 |
+| 5:20    | 5.0 m/s | 20.0 m/s^2 |
+
+#### Full sweep (recommended)
+
+Run all configs x all difficulty levels in one command:
 
 ```bash
-# Navigate to Intent-MPC directory
-cd ..
+cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
 
-# Analyze benchmark data
-python3 scripts/analyze_mpc_benchmark.py --data-dir data/benchmark_20260205_120000
+# Run everything: 3 configs x 3 difficulties = 9 benchmark sets
+make run-full-sweep NUM_TRIALS=10
+
+# Custom configs
+make run-full-sweep CONFIGS="1.5:1.5 3:3" NUM_TRIALS=10
 ```
 
-This generates:
-- **Console output**: Detailed statistics summary
-- **CSV file**: Statistical summary for spreadsheets
-- **LaTeX table**: Publication-ready table (DYNUS-compatible format)
+Data is automatically organized into `data/max_vel_<v>_acc_<a>/` directories. No manual `mkdir`/`mv` needed.
+
+**Parameters:**
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `CONFIGS` | `1.5:1.5 3:3 5:20` | Space-separated `vel:acc` pairs |
+| `NUM_TRIALS` | `10` | Number of trials per difficulty per config |
+| `SEED_START` | `0` | Starting random seed |
+| `VISUALIZE` | *(unset)* | Set to `1` to enable RViz |
+
+#### Run a single config x difficulty
+
+```bash
+# Single difficulty, single config
+make run-benchmark DIFFICULTY=hard MAX_VEL=3.0 MAX_ACC=3.0 NUM_TRIALS=10
+
+# Sweep difficulties for one config (data goes to data root, needs manual move)
+make run-benchmark-sweep DIFFICULTY_LEVELS="easy medium hard" MAX_VEL=3.0 MAX_ACC=3.0 NUM_TRIALS=10
+```
+
+Additional `run-benchmark` parameters:
+| Parameter | Default | Description |
+|-----------|---------|-------------|
+| `DIFFICULTY` | `hard` | `easy` (50 obs), `medium` (100), `hard` (200) |
+| `NUM_TRIALS` | `20` | Number of trials |
+| `MAX_VEL` | `5.0` | Maximum velocity [m/s] |
+| `MAX_ACC` | `20.0` | Maximum acceleration [m/s^2] |
+| `DYNAMIC_RATIO` | `0.65` | Fraction of dynamic obstacles |
+
+### Where Data Goes
+
+All benchmark data is saved to **`Intent-MPC/data/`** on the host (volume-mounted). `run-full-sweep` automatically organizes into config subdirectories:
+
+```
+Intent-MPC/data/
+├── max_vel_1.5_acc_1.5/                               # Created by run-full-sweep
+│   ├── easy_benchmark_20260212_160946/
+│   │   ├── benchmark_intent_mpc_20260212_160946.csv   # Per-trial metrics
+│   │   ├── benchmark_intent_mpc_20260212_160946.json   # Run metadata
+│   │   ├── bags/                                       # Rosbags per trial
+│   │   │   ├── trial_0.bag
+│   │   │   ├── trial_1.bag
+│   │   │   └── ...
+│   │   ├── navigation.log
+│   │   └── gazebo.log
+│   ├── medium_benchmark_20260212_163211/
+│   │   └── ...
+│   └── hard_benchmark_20260212_165624/
+│       └── ...
+├── max_vel_3_acc_3/
+│   ├── easy_benchmark_.../
+│   ├── medium_benchmark_.../
+│   └── hard_benchmark_.../
+└── max_vel_5_acc_20/
+    ├── easy_benchmark_.../
+    ├── medium_benchmark_.../
+    └── hard_benchmark_.../
+```
+
+### Analyzing Results
+
+The analysis script reads all config directories, recomputes constraint violations from rosbags, and updates the LaTeX table in one step.
+
+#### Analyze all configs at once (recommended)
+
+```bash
+cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
+make analyze-benchmark-sweep
+```
+
+This automatically:
+1. Finds all `max_vel_*_acc_*` directories under `Intent-MPC/data/`
+2. Reads rosbags to compute per-timestep Linf constraint violation rates (DYNUS methodology)
+3. Computes statistics for each difficulty level in each config
+4. Updates the LaTeX table at `/home/kkondo/paper_writing/DYNUS_v3/tables/dynamic_benchmark.tex`
+
+**What it produces:**
+- Per-case statistics (success rate, travel time, path length, jerk, min distance, constraint violations)
+- In-place update of I-MPC rows in the DYNUS comparison table (one row per config per difficulty)
+- `\multirow` counts are automatically adjusted
+
+#### Analyze manually (outside Docker)
+
+Requires `rosbags` (`pip install rosbags`) for correct constraint violation rates:
+
+```bash
+cd /home/kkondo/code/ip-mpc_ws
+
+# All configs together
+python3 Intent-MPC/scripts/analyze_benchmark.py \
+  --config-dirs Intent-MPC/data/max_vel_1.5_acc_1.5 \
+               Intent-MPC/data/max_vel_3_acc_3 \
+               Intent-MPC/data/max_vel_5_acc_20 \
+  --skip-collision-postprocess
+
+# Single directory
+python3 Intent-MPC/scripts/analyze_benchmark.py \
+  --data-dir Intent-MPC/data/max_vel_3_acc_3/hard_benchmark_20260212_022809 \
+  --skip-collision-postprocess
+```
+
+**Note:** `--skip-collision-postprocess` skips `rosbag`-based collision re-analysis and MPC computation time extraction (requires the `rosbag` Python package which conflicts with ROS 2). Constraint violation rates are still recomputed correctly from bags via the `rosbags` library (ROS 2 compatible). Inside Docker, omit this flag to also get collision post-processing.
+
+#### Analyze inside Docker (with full rosbag post-processing)
+
+```bash
+cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
+make analyze-benchmark DATA_DIR=max_vel_3_acc_3/hard_benchmark_20260212_022809
+```
+
+### LaTeX Table Output
+
+The analysis script updates **only the I-MPC rows** in the DYNUS comparison table, leaving DYNUS/FAPP/EGO-v2 rows untouched. With multiple configs, the table looks like:
+
+```
+| Case   | Algorithm            | R_succ | T_opt | T_trav | ... |
+|--------|----------------------|--------|-------|--------|-----|
+| Easy   | DYNUS                | 100.0  | 3.7   | 21.7   | ... |
+|        | I-MPC v_max=1.5      | 90.0   | 13.0  | 69.5   | ... |
+|        | I-MPC v_max=3        | 90.0   | 12.6  | 39.0   | ... |
+|        | I-MPC v_max=5        | 70.0   | 4.4   | 25.3   | ... |
+|        | FAPP                 | 90.0   | 0.4   | 26.4   | ... |
+|        | EGO-v2               | 100.0  | 2.7   | 26.1   | ... |
+| Medium | ...                  |        |       |        |     |
+| Hard   | ...                  |        |       |        |     |
+```
+
+Table path: `/home/kkondo/paper_writing/DYNUS_v3/tables/dynamic_benchmark.tex`
 
 ### Collected Metrics
 
-The benchmarking system collects 40+ metrics per trial:
+Each trial CSV contains 50+ metrics:
 
-**Success Metrics**
-- Goal reached, timeout, collision rates
+| Category | Metrics |
+|----------|---------|
+| Success | `goal_reached`, `timeout_reached`, `collision` |
+| Performance | `flight_travel_time`, `path_length`, `path_efficiency` |
+| Smoothness | `jerk_rms`, `jerk_integral`, `avg_velocity`, `max_velocity` |
+| Safety | `collision_count`, `min_distance_to_obstacles` |
+| Constraints (Linf) | `vel_violation_count`, `vel_total_samples`, `acc_violation_count`, `acc_total_samples`, `jerk_violation_count`, `jerk_total_samples` |
+| Constraints (per-axis) | `vel_violation_count_{x,y,z}`, `acc_violation_count_{x,y,z}`, `jerk_violation_count_{x,y,z}` |
+| Computation | `mpc_compute_time_avg`, `mpc_compute_time_max` (from rosbag) |
 
-**Performance Metrics**
-- Flight travel time, path length, path efficiency
+#### Constraint Violation Methodology
 
-**Smoothness Metrics**
-- Jerk RMS, jerk integral, velocity/acceleration statistics
+Constraint violations follow the DYNUS methodology:
+- **Linf norm**: A timestep is a violation if **any** axis component exceeds the limit + 1e-3 tolerance
+- **Rate**: `rho = violating_timesteps / total_timesteps * 100%`
+- **Aggregation**: Violation counts and total samples are summed across all successful runs, then the rate is computed
+- **Data source**: Commanded trajectory (`/autonomous_flight/target_state` topic)
+- **Limits**: `vel_limit` and `acc_limit` are read from the CSV (set per-config), `jerk_limit` defaults to 100 m/s^3
+- **I-MPC jerk**: Reported as `{-}` in the table since I-MPC has no jerk constraints
+- **Recomputation**: If the CSV lacks per-timestep Linf columns, the analysis script automatically recomputes them from rosbags using the `rosbags` library
 
-**Safety Metrics**
-- Collision count, penetration depth, minimum distance to obstacles
+### Full Workflow Example
 
-**Constraint Violations**
-- Velocity, acceleration, and jerk violation counts
-
-**Computation Metrics**
-- Replanning count, average/max replanning time
-
-### Example Configurations
-
-```bash
-# Sparse environment
-make run-benchmark NUM_OBSTACLES=100 DYNAMIC_RATIO=0.5 NUM_TRIALS=30
-
-# Dense environment
-make run-benchmark NUM_OBSTACLES=300 DYNAMIC_RATIO=0.8 NUM_TRIALS=30
-
-# Static obstacles only
-make run-benchmark NUM_OBSTACLES=200 DYNAMIC_RATIO=0.0 NUM_TRIALS=30
-```
-
-### Comparison with DYNUS
-
-Run equivalent DYNUS benchmarks for comparison:
+Run all benchmarks from scratch and generate the comparison table:
 
 ```bash
-# DYNUS benchmark
-cd /home/kkondo/code/dynus_ws/src/dynus
-python3 scripts/run_benchmark.py --num-trials 50 --setup-bash ../../install/setup.bash
-
-# Intent-MPC benchmark
 cd /home/kkondo/code/ip-mpc_ws/Intent-MPC/docker
-make run-benchmark NUM_TRIALS=50 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7
 
-# Analyze both
-python3 ../scripts/analyze_mpc_benchmark.py --data-dir ../data/benchmark_<timestamp>
-cd /home/kkondo/code/dynus_ws/src/dynus
-python3 scripts/analyze_dynamic_benchmark.py --data-dir benchmark_data/default/<timestamp>
+# 1. Build (if C++ changed)
+make build
+
+# 2. Run full sweep: 3 configs x 3 difficulties = 9 benchmark sets
+#    Data auto-organized into data/max_vel_<v>_acc_<a>/
+make run-full-sweep NUM_TRIALS=10
+
+# 3. Analyze all configs and update LaTeX table
+make analyze-benchmark-sweep
 ```
 
-### Detailed Documentation
+To add a new velocity configuration later:
 
-For complete benchmarking documentation, see:
 ```bash
-cat ../scripts/BENCHMARK_README.md
-```
+# Run just the new config
+make run-full-sweep CONFIGS="7:30" NUM_TRIALS=10
 
-Or view in the repository at:
-`scripts/BENCHMARK_README.md`
+# Re-analyze (picks up the new max_vel_7_acc_30/ directory automatically)
+make analyze-benchmark-sweep
+```
 
 ## Makefile Targets
 
 Available commands:
 
 ```bash
-make build              # Build Docker image
-make run-dynamic-gazebo # Run DYNUS simulation (RECOMMENDED)
-                        # Usage: make run-dynamic-gazebo NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7 SEED=42
-make run-benchmark      # Run benchmark trials with data persistence
-                        # Usage: make run-benchmark NUM_TRIALS=20 NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7
-make stop               # Stop all tmux simulation sessions
-make shell              # Open bash shell in container (for manual launch/debugging)
-make run-demo           # Run original circular demo
-make run                # Run container (interactive)
-make clean              # Remove stopped containers
-make help               # Show help message
+# Building
+make build                  # Build Docker image (incremental)
+make build-clone            # Build with cache-busting (fresh git clone)
+
+# Running simulations
+make run-dynamic-gazebo     # Run DYNUS simulation (RECOMMENDED)
+                            #   NUM_OBSTACLES=200 DYNAMIC_RATIO=0.7 SEED=0
+make run-demo               # Run original circular demo
+make shell                  # Open bash shell in container (with host mount)
+make run                    # Run container (interactive)
+make run-dev                # Run with host workspace mounted
+make run-gazebo-dev         # Auto-launch ACL sim with host mount
+
+# Benchmarking
+make run-benchmark          # Run benchmark trials
+                            #   DIFFICULTY=hard NUM_TRIALS=20 MAX_VEL=5.0 MAX_ACC=20.0
+make run-benchmark-sweep    # Sweep difficulty levels (easy + medium by default)
+                            #   DIFFICULTY_LEVELS="easy medium" NUM_TRIALS=20
+make run-benchmark-viz      # Single trial with RViz visualization
+
+# Analysis
+make analyze-benchmark-sweep  # Analyze all max_vel_*_acc_* configs, update LaTeX table
+make analyze-benchmark        # Analyze single dir: DATA_DIR=max_vel_3_acc_3/hard_benchmark_...
+
+# Cleanup
+make stop                   # Stop all tmux simulation sessions
+make clean                  # Remove stopped containers
+make help                   # Show help message
 ```
 
 ## Contributing
@@ -1113,6 +1265,6 @@ make help               # Show help message
 
 ---
 
-**Last Updated**: 2026-02-05
+**Last Updated**: 2026-02-17
 **Maintainer**: Kota Kondo (kkondo@mit.edu)
 **Docker Environment**: ROS Noetic (Ubuntu 20.04) + Gazebo 11

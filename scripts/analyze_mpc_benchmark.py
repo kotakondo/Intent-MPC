@@ -356,7 +356,7 @@ def generate_latex_table(stats: dict, algorithm_name: str = "Intent-MPC") -> str
     # Generate the row
     latex_row = (f"      {algorithm_name} & {success_rate:.1f} & {collision_free_rate:.1f} & {per_opt_time:.1f} & "
                  f"{travel_time:.1f} & {path_length:.1f} & {jerk_integral:.1f} & {min_dist_str} & "
-                 f"{vel_viol:.1f} & {acc_viol:.1f} & {jerk_viol:.1f} \\\\")
+                 f"{vel_viol:.1f} & {acc_viol:.1f} & {{-}} \\\\")
 
     return latex_row
 
@@ -448,6 +448,13 @@ def main():
     )
 
     parser.add_argument(
+        '--acceleration-weight',
+        type=float,
+        default=None,
+        help='Override acceleration_weight (auto-detected from CSV/dir name if omitted)'
+    )
+
+    parser.add_argument(
         '--dynus-table-path',
         type=str,
         default='/home/kkondo/paper_writing/DYNUS_v3/tables/dynamic_benchmark.tex',
@@ -469,6 +476,30 @@ def main():
     print(f"\nLoading data from: {args.data_dir}\n")
 
     df = load_benchmark_data(args.data_dir)
+
+    # Auto-detect acceleration_weight and auto-name algorithm
+    acceleration_weight = args.acceleration_weight
+    if acceleration_weight is None:
+        data_path = Path(args.data_dir)
+        if 'acceleration_weight' in df.columns:
+            wt = df['acceleration_weight'].dropna().unique()
+            if len(wt) == 1:
+                acceleration_weight = float(wt[0])
+        if acceleration_weight is None:
+            import re
+            match = re.search(r'_wa([\d.]+)', data_path.name)
+            if match:
+                acceleration_weight = float(match.group(1))
+
+    if acceleration_weight is not None and args.algorithm_name == 'I-MPC':
+        import math
+        exp = math.log10(acceleration_weight)
+        if exp == int(exp):
+            wa_str = f'\\num{{e{int(exp)}}}'
+        else:
+            wa_str = str(acceleration_weight)
+        args.algorithm_name = f'I-MPC, $w_a={wa_str}$'
+        print(f"  Auto-detected acceleration_weight={acceleration_weight}, algorithm_name={args.algorithm_name}\n")
 
     # Compute statistics
     print("Computing statistics...")

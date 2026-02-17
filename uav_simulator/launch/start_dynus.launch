@@ -54,10 +54,10 @@
     <param name="seed" value="$(arg seed)"/>
     <param name="publish_rate_hz" value="50.0"/>
     <param name="publish_markers" value="true"/>
-    <param name="x_min" value="0.0"/>
+    <param name="x_min" value="5.0"/>
     <param name="x_max" value="100.0"/>
-    <param name="y_min" value="-7.0"/>
-    <param name="y_max" value="7.0"/>
+    <param name="y_min" value="-6.0"/>
+    <param name="y_max" value="6.0"/>
     <param name="z_min" value="0.5"/>
     <param name="z_max" value="4.5"/>
     <param name="slower_min" value="4.0"/>

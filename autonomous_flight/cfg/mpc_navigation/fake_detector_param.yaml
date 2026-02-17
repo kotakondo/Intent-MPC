@@ -1,5 +1,5 @@
 # this is only used in simulation
-color_distance: 4.0
+color_distance: 30.0
 # Track all DYNUS obstacles using prefix matching
 # fake_detector matches any model name that STARTS with these prefixes
 target_obstacle: ["obstacle"]

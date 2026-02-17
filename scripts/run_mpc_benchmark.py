@@ -36,7 +36,7 @@ import rospy
 import rosgraph
 from nav_msgs.msg import Odometry
 from geometry_msgs.msg import PoseStamped, Vector3
-from std_msgs.msg import String
+from std_msgs.msg import String, Float64
 from gazebo_msgs.msg import ModelStates
 
 # Import tracking_controller Target message for commanded pos/vel/acc
@@ -85,18 +85,41 @@ class BenchmarkMetrics:
     avg_acceleration: float = 0.0  # m/s²
     max_acceleration: float = 0.0  # m/s²
 
-    # Constraint violations (DYNUS benchmark limits)
+    # Constraint violations (DYNUS benchmark limits) - Linf norm (per-axis)
     vel_limit: float = 5.0  # m/s (DYNUS: v_max)
     acc_limit: float = 20.0  # m/s² (DYNUS: a_max)
     jerk_limit: float = 100.0  # m/s³ (DYNUS: j_max)
 
+    # Per-timestep Linf violation counts (DYNUS methodology):
+    # A timestep is a violation if ANY axis exceeds the limit + tolerance.
     vel_violation_count: int = 0
     acc_violation_count: int = 0
     jerk_violation_count: int = 0
+    vel_total_samples: int = 0
+    acc_total_samples: int = 0
+    jerk_total_samples: int = 0
 
-    vel_violation_max: float = 0.0  # max velocity observed
-    acc_violation_max: float = 0.0  # max acceleration observed
-    jerk_violation_max: float = 0.0  # max jerk observed
+    # Per-axis violation counts (kept for diagnostics)
+    vel_violation_count_x: int = 0
+    vel_violation_count_y: int = 0
+    vel_violation_count_z: int = 0
+    acc_violation_count_x: int = 0
+    acc_violation_count_y: int = 0
+    acc_violation_count_z: int = 0
+    jerk_violation_count_x: int = 0
+    jerk_violation_count_y: int = 0
+    jerk_violation_count_z: int = 0
+
+    # Per-axis max values observed
+    vel_max_x: float = 0.0
+    vel_max_y: float = 0.0
+    vel_max_z: float = 0.0
+    acc_max_x: float = 0.0
+    acc_max_y: float = 0.0
+    acc_max_z: float = 0.0
+    jerk_max_x: float = 0.0
+    jerk_max_y: float = 0.0
+    jerk_max_z: float = 0.0
 
     # MPC computation time metrics (seconds)
     mpc_compute_time_avg: float = 0.0  # Average computation time per solve
@@ -114,6 +137,13 @@ class BenchmarkMetrics:
     # Goal configuration (DYNUS benchmark)
     start_position: List[float] = field(default_factory=lambda: [0.0, 0.0, 2.0])
     goal_position: List[float] = field(default_factory=lambda: [105.0, 0.0, 2.0])
+
+    # MPC weight configuration
+    acceleration_weight: float = 10.0
+    max_vel: float = 5.0
+
+    # Difficulty configuration
+    difficulty: str = ""  # easy, medium, hard
 
     # Rosbag path for post-processing
     bag_file: str = ""
@@ -136,7 +166,6 @@ class BenchmarkMonitor:
         self.start_time = None
         self.last_position = None
         self.last_time = None
-        self.last_print_time = -10  # Track last print time to avoid spam
 
         # COMMANDED trajectory data from target_state (for vel/acc/jerk metrics)
         self.target_data: List[Tuple[float, np.ndarray, np.ndarray, np.ndarray]] = []  # (time, pos, vel, acc)
@@ -146,18 +175,18 @@ class BenchmarkMonitor:
         # Goal tracking (DYNUS benchmark: (0,0,2) -> (105,0,2))
         self.goal_position = np.array([105.0, 0.0, 2.0])
         self.start_position = np.array([0.0, 0.0, 2.0])
-        self.goal_threshold = 2.0  # meters
+        self.goal_threshold = 0.5  # meters
         self.start_threshold = 10.0  # meters - must be near start before monitoring begins
         self.waiting_for_start = True  # Don't start monitoring until drone is near start position
         self.monitor_created_time = time.time()  # Wall clock time for timeout
         self.odom_callback_count = 0  # Debug: count callbacks
 
+        # MPC compute time tracking
+        self.mpc_compute_times: List[float] = []  # seconds per solve
+
         # Obstacle tracking for collision detection
         self.obstacle_positions = {}  # {name: position}
         self.obstacle_sizes = {}  # {name: (x_size, y_size, z_size)}
-
-        # Drone bounding box (DYNUS benchmark: [0.2, 0.2, 0.2])
-        self.drone_half_extents = (0.1, 0.1, 0.1)  # Half of [0.2, 0.2, 0.2]
 
         # ROS subscribers
         # Odom for actual position (path length calculation)
@@ -181,6 +210,10 @@ class BenchmarkMonitor:
 
         self.model_states_sub = rospy.Subscriber(dynus_topic, ModelStates, self.model_states_callback)
         rospy.loginfo("Subscribed to /dynus/model_states for obstacle collision detection")
+
+        # MPC compute time subscriber
+        self.mpc_compute_time_sub = rospy.Subscriber('/mpcNavigation/mpc_compute_time', Float64, self.mpc_compute_time_callback)
+        rospy.loginfo("Subscribed to /mpcNavigation/mpc_compute_time for solver timing")
 
         # Status tracking
         self.is_complete = False
@@ -214,11 +247,12 @@ class BenchmarkMonitor:
                 self.waiting_for_start = False
                 rospy.loginfo(f"Trial {self.metrics.trial_id}: Drone near start position, beginning monitoring (callbacks so far: {self.odom_callback_count})")
 
+        # start_time is set by the first target_state callback (first command message).
+        # If we haven't received a command yet, record odom at t=0 for path tracking.
         if self.start_time is None:
-            self.start_time = rospy.Time.now().to_sec()
-            rospy.loginfo(f"Trial {self.metrics.trial_id}: Started at {self.start_time}")
-
-        current_time = rospy.Time.now().to_sec() - self.start_time
+            current_time = 0.0
+        else:
+            current_time = rospy.Time.now().to_sec() - self.start_time
 
         # Store actual position for path length calculation
         self.odom_data.append((current_time, pos))
@@ -226,26 +260,28 @@ class BenchmarkMonitor:
         self.last_position = pos
         self.last_time = current_time
 
-        # Check if goal reached (with minimum flight time to avoid false positives)
+        # Extract velocity from odometry for goal reached check
+        vel = np.array([msg.twist.twist.linear.x, msg.twist.twist.linear.y, msg.twist.twist.linear.z])
+        vel_magnitude = np.linalg.norm(vel)
+
+        # Check if goal reached (distance + velocity threshold only, no minimum flight time)
         goal_distance = np.linalg.norm(pos - self.goal_position)
-        min_flight_time = 10.0  # Goal can't be reached in less than 10 seconds (105m at 5m/s = 21s minimum)
-        if goal_distance < self.goal_threshold and current_time > min_flight_time:
+        vel_threshold = 0.1  # m/s - drone must be nearly stopped to count as "goal reached"
+        if goal_distance < self.goal_threshold and vel_magnitude < vel_threshold:
             if not self.is_complete:
                 self.is_complete = True
                 self.completion_reason = "goal_reached"
                 self.metrics.goal_reached = True
                 self.metrics.flight_travel_time = current_time
-                rospy.loginfo(f"Trial {self.metrics.trial_id}: *** GOAL REACHED *** in {current_time:.2f}s (distance: {goal_distance:.2f}m)")
+                rospy.loginfo(f"Trial {self.metrics.trial_id}: *** GOAL REACHED *** in {current_time:.2f}s (distance: {goal_distance:.2f}m, vel: {vel_magnitude:.3f}m/s)")
 
-        # Debug output every 5 seconds (only once per interval)
-        if current_time - self.last_print_time >= 5.0:
-            self.last_print_time = current_time
-            rospy.loginfo(f"Trial {self.metrics.trial_id}: t={current_time:.0f}s, pos=[{pos[0]:.1f}, {pos[1]:.1f}, {pos[2]:.1f}], goal_dist={goal_distance:.1f}m")
 
     def target_callback(self, msg):
         """Collect COMMANDED pos/vel/acc from target_state (like DYNUS /NX01/goal)"""
+        # Travel time starts at the FIRST command message (first target_state callback)
         if self.start_time is None:
-            return  # Wait for odom to start timing
+            self.start_time = rospy.Time.now().to_sec()
+            rospy.loginfo(f"Trial {self.metrics.trial_id}: Travel time started at first target_state command (t={self.start_time:.3f})")
 
         current_time = rospy.Time.now().to_sec() - self.start_time
 
@@ -267,20 +303,22 @@ class BenchmarkMonitor:
             if 'obstacle' in name:
                 obstacles_found += 1
                 pos = msg.pose[i].position
-                self.obstacle_positions[name] = np.array([pos.x, pos.y, pos.z])
+                # Use index as key since all obstacles of the same type share the same name
+                # (e.g., all dynamic cubes are "obstacle_d080_080_080")
+                obs_key = i
+                self.obstacle_positions[obs_key] = np.array([pos.x, pos.y, pos.z])
 
                 # Parse obstacle size from name (e.g., "obstacle_d080_080_080")
-                if name not in self.obstacle_sizes:
+                if obs_key not in self.obstacle_sizes:
                     size = self.parse_obstacle_size(name)
                     if size is not None:
-                        self.obstacle_sizes[name] = size
+                        self.obstacle_sizes[obs_key] = size
 
         # Log obstacle count periodically (first time and every 500 callbacks)
         if not hasattr(self, '_model_states_callback_count'):
             self._model_states_callback_count = 0
         self._model_states_callback_count += 1
         if self._model_states_callback_count == 1:
-            # First callback - print to both stdout and rospy
             print(f"*** DYNUS MODEL_STATES CALLBACK RECEIVED! Trial {self.metrics.trial_id}: tracking {len(self.obstacle_positions)} obstacles ***", flush=True)
             rospy.loginfo(f"Trial {self.metrics.trial_id}: model_states callback #{self._model_states_callback_count}, tracking {len(self.obstacle_positions)} obstacles")
         elif self._model_states_callback_count % 500 == 0:
@@ -289,6 +327,11 @@ class BenchmarkMonitor:
         # Check for collisions if we have odometry data
         if self.last_position is not None:
             self.check_collisions()
+
+    def mpc_compute_time_callback(self, msg: Float64):
+        """Collect MPC solver computation time per solve"""
+        if self.start_time is not None:
+            self.mpc_compute_times.append(msg.data)
 
     def parse_obstacle_size(self, name: str) -> Optional[Tuple[float, float, float]]:
         """Parse obstacle size from name (format: obstacle_dXXX_YYY_ZZZ)"""
@@ -307,58 +350,39 @@ class BenchmarkMonitor:
         return (0.8, 0.8, 0.8)
 
     def check_collisions(self):
-        """Check for collisions with all obstacles"""
+        """Check for collisions with all obstacles.
+
+        Uses point-to-AABB Euclidean distance: distance from drone center
+        to the closest point on the obstacle box surface.
+        """
         if self.last_position is None:
             return
 
-        drone_bbox = self.create_bbox(self.last_position, self.drone_half_extents)
+        for obs_key, obs_pos in self.obstacle_positions.items():
+            obs_size = self.obstacle_sizes.get(obs_key, (0.8, 0.8, 0.8))
+            obs_half = (obs_size[0] / 2.0, obs_size[1] / 2.0, obs_size[2] / 2.0)
 
-        for obs_name, obs_pos in self.obstacle_positions.items():
-            obs_size = self.obstacle_sizes.get(obs_name, (0.8, 0.8, 0.8))
-            obs_half_extents = tuple(s / 2.0 for s in obs_size)
-            obs_bbox = self.create_bbox(obs_pos, obs_half_extents)
+            # Per-axis gap from drone center to obstacle surface (0 if overlapping on that axis)
+            dx = max(0.0, abs(self.last_position[0] - obs_pos[0]) - obs_half[0])
+            dy = max(0.0, abs(self.last_position[1] - obs_pos[1]) - obs_half[1])
+            dz = max(0.0, abs(self.last_position[2] - obs_pos[2]) - obs_half[2])
 
-            # Check intersection
-            distance = self.bbox_distance(drone_bbox, obs_bbox)
+            # Euclidean distance from drone center to closest point on box surface
+            distance = math.sqrt(dx * dx + dy * dy + dz * dz)
             self.metrics.min_distance_to_obstacles = min(self.metrics.min_distance_to_obstacles, distance)
 
-            if self.bbox_intersects(drone_bbox, obs_bbox):
+            # Collision: drone center is inside the box (distance == 0)
+            if distance == 0.0:
                 self.metrics.collision_count += 1
-                penetration = -distance  # Negative distance = penetration
+                pen_x = obs_half[0] - abs(self.last_position[0] - obs_pos[0])
+                pen_y = obs_half[1] - abs(self.last_position[1] - obs_pos[1])
+                pen_z = obs_half[2] - abs(self.last_position[2] - obs_pos[2])
+                penetration = min(pen_x, pen_y, pen_z)
                 self.metrics.collision_penetration_max = max(self.metrics.collision_penetration_max, penetration)
 
                 if not self.metrics.collision:
                     self.metrics.collision = True
-                    rospy.logwarn(f"Trial {self.metrics.trial_id}: Collision detected with {obs_name}")
-
-    @staticmethod
-    def create_bbox(center: np.ndarray, half_extents: Tuple[float, float, float]) -> dict:
-        """Create axis-aligned bounding box"""
-        return {
-            'min_x': center[0] - half_extents[0],
-            'max_x': center[0] + half_extents[0],
-            'min_y': center[1] - half_extents[1],
-            'max_y': center[1] + half_extents[1],
-            'min_z': center[2] - half_extents[2],
-            'max_z': center[2] + half_extents[2],
-        }
-
-    @staticmethod
-    def bbox_intersects(bbox1: dict, bbox2: dict) -> bool:
-        """Check if two bounding boxes intersect"""
-        return not (bbox1['max_x'] < bbox2['min_x'] or bbox1['min_x'] > bbox2['max_x'] or
-                    bbox1['max_y'] < bbox2['min_y'] or bbox1['min_y'] > bbox2['max_y'] or
-                    bbox1['max_z'] < bbox2['min_z'] or bbox1['min_z'] > bbox2['max_z'])
-
-    @staticmethod
-    def bbox_distance(bbox1: dict, bbox2: dict) -> float:
-        """Calculate minimum distance between two bounding boxes"""
-        if BenchmarkMonitor.bbox_intersects(bbox1, bbox2):
-            return 0.0
-        dx = max(0.0, max(bbox1['min_x'], bbox2['min_x']) - min(bbox1['max_x'], bbox2['max_x']))
-        dy = max(0.0, max(bbox1['min_y'], bbox2['min_y']) - min(bbox1['max_y'], bbox2['max_y']))
-        dz = max(0.0, max(bbox1['min_z'], bbox2['min_z']) - min(bbox1['max_z'], bbox2['max_z']))
-        return math.sqrt(dx*dx + dy*dy + dz*dz)
+                    rospy.logwarn(f"Trial {self.metrics.trial_id}: Collision detected with obstacle idx={obs_key}")
 
     def compute_final_metrics(self):
         """Compute all metrics after trial completion
@@ -421,32 +445,64 @@ class BenchmarkMonitor:
                 self.metrics.avg_velocity = 0.0
                 self.metrics.max_velocity = 0.0
 
-            rospy.loginfo(f"Trial {self.metrics.trial_id}: Commanded Velocity - avg: {self.metrics.avg_velocity:.2f} m/s, max: {self.metrics.max_velocity:.2f} m/s (limit: {self.metrics.vel_limit} m/s)")
+            rospy.loginfo(f"Trial {self.metrics.trial_id}: Commanded Velocity - avg: {self.metrics.avg_velocity:.2f} m/s, max: {self.metrics.max_velocity:.2f} m/s (limit: {self.metrics.vel_limit} m/s, Linf)")
 
-            # Velocity violations (per-component, like DYNUS)
+            # Velocity violations - Linf norm (DYNUS: any axis exceeds → 1 violation)
+            self.metrics.vel_total_samples = len(velocities)
             for vel in velocities:
-                for component in vel:
-                    if abs(component) > self.metrics.vel_limit + 1e-3:  # Small tolerance
-                        self.metrics.vel_violation_count += 1
-                        excess = abs(component) - self.metrics.vel_limit
-                        self.metrics.vel_violation_max = max(self.metrics.vel_violation_max, abs(component))
+                # Track max per axis
+                self.metrics.vel_max_x = max(self.metrics.vel_max_x, abs(vel[0]))
+                self.metrics.vel_max_y = max(self.metrics.vel_max_y, abs(vel[1]))
+                self.metrics.vel_max_z = max(self.metrics.vel_max_z, abs(vel[2]))
+                # Per-axis counts (diagnostics)
+                vx_viol = abs(vel[0]) > self.metrics.vel_limit + 1e-3
+                vy_viol = abs(vel[1]) > self.metrics.vel_limit + 1e-3
+                vz_viol = abs(vel[2]) > self.metrics.vel_limit + 1e-3
+                if vx_viol:
+                    self.metrics.vel_violation_count_x += 1
+                if vy_viol:
+                    self.metrics.vel_violation_count_y += 1
+                if vz_viol:
+                    self.metrics.vel_violation_count_z += 1
+                # Per-timestep Linf count (any axis)
+                if vx_viol or vy_viol or vz_viol:
+                    self.metrics.vel_violation_count += 1
 
             if self.metrics.vel_violation_count > 0:
-                rospy.logwarn(f"Trial {self.metrics.trial_id}: VELOCITY VIOLATIONS: {self.metrics.vel_violation_count} component violations (max: {self.metrics.vel_violation_max:.2f} m/s)")
+                vel_rate = self.metrics.vel_violation_count / self.metrics.vel_total_samples * 100
+                rospy.logwarn(f"Trial {self.metrics.trial_id}: VELOCITY VIOLATIONS (Linf): {self.metrics.vel_violation_count}/{self.metrics.vel_total_samples} ({vel_rate:.1f}%) - x={self.metrics.vel_violation_count_x} (max {self.metrics.vel_max_x:.2f}), y={self.metrics.vel_violation_count_y} (max {self.metrics.vel_max_y:.2f}), z={self.metrics.vel_violation_count_z} (max {self.metrics.vel_max_z:.2f}) m/s")
 
             # Acceleration metrics from commanded trajectory
             acc_magnitudes = np.linalg.norm(accelerations, axis=1)
             self.metrics.avg_acceleration = float(np.mean(acc_magnitudes))
             self.metrics.max_acceleration = float(np.max(acc_magnitudes))
 
-            rospy.loginfo(f"Trial {self.metrics.trial_id}: Commanded Acceleration - avg: {self.metrics.avg_acceleration:.2f} m/s², max: {self.metrics.max_acceleration:.2f} m/s² (limit: {self.metrics.acc_limit} m/s²)")
+            rospy.loginfo(f"Trial {self.metrics.trial_id}: Commanded Acceleration - avg: {self.metrics.avg_acceleration:.2f} m/s², max: {self.metrics.max_acceleration:.2f} m/s² (limit: {self.metrics.acc_limit} m/s², Linf)")
 
-            # Acceleration violations (per-component, like DYNUS)
+            # Acceleration violations - Linf norm (DYNUS: any axis exceeds → 1 violation)
+            self.metrics.acc_total_samples = len(accelerations)
             for acc in accelerations:
-                for component in acc:
-                    if abs(component) > self.metrics.acc_limit + 1e-3:
-                        self.metrics.acc_violation_count += 1
-                        self.metrics.acc_violation_max = max(self.metrics.acc_violation_max, abs(component))
+                # Track max per axis
+                self.metrics.acc_max_x = max(self.metrics.acc_max_x, abs(acc[0]))
+                self.metrics.acc_max_y = max(self.metrics.acc_max_y, abs(acc[1]))
+                self.metrics.acc_max_z = max(self.metrics.acc_max_z, abs(acc[2]))
+                # Per-axis counts (diagnostics)
+                ax_viol = abs(acc[0]) > self.metrics.acc_limit + 1e-3
+                ay_viol = abs(acc[1]) > self.metrics.acc_limit + 1e-3
+                az_viol = abs(acc[2]) > self.metrics.acc_limit + 1e-3
+                if ax_viol:
+                    self.metrics.acc_violation_count_x += 1
+                if ay_viol:
+                    self.metrics.acc_violation_count_y += 1
+                if az_viol:
+                    self.metrics.acc_violation_count_z += 1
+                # Per-timestep Linf count (any axis)
+                if ax_viol or ay_viol or az_viol:
+                    self.metrics.acc_violation_count += 1
+
+            if self.metrics.acc_violation_count > 0:
+                acc_rate = self.metrics.acc_violation_count / self.metrics.acc_total_samples * 100
+                rospy.logwarn(f"Trial {self.metrics.trial_id}: ACCELERATION VIOLATIONS (Linf): {self.metrics.acc_violation_count}/{self.metrics.acc_total_samples} ({acc_rate:.1f}%) - x={self.metrics.acc_violation_count_x} (max {self.metrics.acc_max_x:.2f}), y={self.metrics.acc_violation_count_y} (max {self.metrics.acc_max_y:.2f}), z={self.metrics.acc_violation_count_z} (max {self.metrics.acc_max_z:.2f}) m/s²")
 
             # Jerk computation (derivative of acceleration from commanded trajectory)
             # Use min length to avoid index out of bounds
@@ -469,14 +525,32 @@ class BenchmarkMonitor:
                     avg_dt = np.mean(np.diff(target_times))
                     self.metrics.jerk_integral = float(np.sum(jerks) * avg_dt)
 
-                    rospy.loginfo(f"Trial {self.metrics.trial_id}: Jerk - RMS: {self.metrics.jerk_rms:.2f} m/s³, Integral: {self.metrics.jerk_integral:.2f} (limit: {self.metrics.jerk_limit} m/s³)")
+                    rospy.loginfo(f"Trial {self.metrics.trial_id}: Jerk - RMS: {self.metrics.jerk_rms:.2f} m/s³, Integral: {self.metrics.jerk_integral:.2f} (limit: {self.metrics.jerk_limit} m/s³, Linf)")
 
-                    # Jerk violations (per-component, like DYNUS)
+                    # Jerk violations - Linf norm (DYNUS: any axis exceeds → 1 violation)
+                    self.metrics.jerk_total_samples = len(jerk_vectors)
                     for jerk in jerk_vectors:
-                        for component in jerk:
-                            if abs(component) > self.metrics.jerk_limit + 1e-3:
-                                self.metrics.jerk_violation_count += 1
-                                self.metrics.jerk_violation_max = max(self.metrics.jerk_violation_max, abs(component))
+                        # Track max per axis
+                        self.metrics.jerk_max_x = max(self.metrics.jerk_max_x, abs(jerk[0]))
+                        self.metrics.jerk_max_y = max(self.metrics.jerk_max_y, abs(jerk[1]))
+                        self.metrics.jerk_max_z = max(self.metrics.jerk_max_z, abs(jerk[2]))
+                        # Per-axis counts (diagnostics)
+                        jx_viol = abs(jerk[0]) > self.metrics.jerk_limit + 1e-3
+                        jy_viol = abs(jerk[1]) > self.metrics.jerk_limit + 1e-3
+                        jz_viol = abs(jerk[2]) > self.metrics.jerk_limit + 1e-3
+                        if jx_viol:
+                            self.metrics.jerk_violation_count_x += 1
+                        if jy_viol:
+                            self.metrics.jerk_violation_count_y += 1
+                        if jz_viol:
+                            self.metrics.jerk_violation_count_z += 1
+                        # Per-timestep Linf count (any axis)
+                        if jx_viol or jy_viol or jz_viol:
+                            self.metrics.jerk_violation_count += 1
+
+                    if self.metrics.jerk_violation_count > 0:
+                        jerk_rate = self.metrics.jerk_violation_count / self.metrics.jerk_total_samples * 100
+                        rospy.logwarn(f"Trial {self.metrics.trial_id}: JERK VIOLATIONS (Linf): {self.metrics.jerk_violation_count}/{self.metrics.jerk_total_samples} ({jerk_rate:.1f}%) - x={self.metrics.jerk_violation_count_x} (max {self.metrics.jerk_max_x:.2f}), y={self.metrics.jerk_violation_count_y} (max {self.metrics.jerk_max_y:.2f}), z={self.metrics.jerk_violation_count_z} (max {self.metrics.jerk_max_z:.2f}) m/s³")
 
         else:
             rospy.logwarn(f"Trial {self.metrics.trial_id}: No target_state data - velocity/acceleration metrics unavailable")
@@ -491,6 +565,17 @@ class BenchmarkMonitor:
         # Count unique obstacles hit
         if self.metrics.collision_count > 0:
             self.metrics.collision_unique_obstacles = max(1, int(self.metrics.collision_count / 10))
+
+        # MPC compute time metrics
+        if len(self.mpc_compute_times) > 0:
+            times = np.array(self.mpc_compute_times)
+            self.metrics.mpc_compute_time_avg = float(np.mean(times))
+            self.metrics.mpc_compute_time_max = float(np.max(times))
+            self.metrics.mpc_compute_time_std = float(np.std(times))
+            self.metrics.mpc_solve_count = len(self.mpc_compute_times)
+            rospy.loginfo(f"Trial {self.metrics.trial_id}: MPC compute time - avg: {self.metrics.mpc_compute_time_avg*1000:.2f}ms, max: {self.metrics.mpc_compute_time_max*1000:.2f}ms, std: {self.metrics.mpc_compute_time_std*1000:.2f}ms, solves: {self.metrics.mpc_solve_count}")
+        else:
+            rospy.logwarn(f"Trial {self.metrics.trial_id}: No MPC compute time data collected - check /mpcNavigation/mpc_compute_time topic")
 
         rospy.loginfo(f"Trial {self.metrics.trial_id}: Metrics computed successfully")
         rospy.loginfo(f"  Path length: {self.metrics.path_length:.2f}m")
@@ -642,7 +727,7 @@ def kill_all_ros_processes(max_retries=3, keep_roscore=False):
     print("Cleanup complete", flush=True)
 
 
-def launch_simulation_and_navigation(num_obstacles: int, dynamic_ratio: float, seed: int, visualize: bool = False):
+def launch_simulation_and_navigation(num_obstacles: int, dynamic_ratio: float, seed: int, visualize: bool = False, acceleration_weight: float = 10.0, max_vel: float = 5.0, max_acc: float = 20.0, output_dir: FilePath = None, bag_path: FilePath = None, bag_topics: List[str] = None):
     """Launch Intent-MPC with DYNUS obstacles using split launch (like working run-dynamic-gazebo)
 
     This mimics the exact tmuxp approach from dynus_sim.yml:
@@ -651,7 +736,13 @@ def launch_simulation_and_navigation(num_obstacles: int, dynamic_ratio: float, s
     3. Launch Gazebo + obstacles (start_dynus.launch) with gui:=false
     4. Wait 5 more seconds (8 total from start)
     5. Send takeoff command
+    5c. Start rosbag recording (BEFORE navigation launch to capture early trajectory)
+    5d. Wait 10s for rosbag to be fully ready
     6. Launch navigation (intent_mpc_dynus_nav.launch)
+
+    Args:
+        bag_path: Path for rosbag file. If provided, starts recording before navigation launch.
+        bag_topics: List of ROS topics to record. Required if bag_path is provided.
     """
     print(f"Launching Intent-MPC with DYNUS obstacles (split launch):", flush=True)
     print(f"  Obstacles: {num_obstacles}", flush=True)
@@ -695,8 +786,12 @@ def launch_simulation_and_navigation(num_obstacles: int, dynamic_ratio: float, s
     print(f"Step 3: Launching Gazebo + obstacles (headless)...", flush=True)
     print(f"  Command: {' '.join(gazebo_cmd)}", flush=True)
 
+    # Write subprocess output to log files (NOT PIPE) to prevent pipe buffer deadlock
+    log_dir = output_dir if output_dir else FilePath('/tmp')
+    log_dir.mkdir(parents=True, exist_ok=True)
+    gazebo_log = open(log_dir / 'gazebo.log', 'w')
     gazebo_proc = subprocess.Popen(gazebo_cmd, preexec_fn=os.setsid,
-                                   stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                   stdout=gazebo_log, stderr=subprocess.STDOUT)
 
     # Store roscore proc so we can kill it later
     gazebo_proc.roscore_proc = roscore_proc
@@ -748,37 +843,62 @@ def launch_simulation_and_navigation(num_obstacles: int, dynamic_ratio: float, s
     print("Step 5b: Waiting for takeoff to complete (5s)...", flush=True)
     time.sleep(5)
 
+    # STEP 5c: Start rosbag recording BEFORE navigation launch
+    # This ensures early trajectory data is captured from the very start of navigation.
+    rosbag_proc = None
+    if bag_path is not None and bag_topics is not None:
+        print("Step 5c: Starting rosbag recording BEFORE navigation launch...", flush=True)
+        rosbag_proc = start_rosbag_recording(bag_path, bag_topics)
+        print("Step 5d: Waiting 10s for rosbag to be fully ready...", flush=True)
+        time.sleep(10)
+    else:
+        print("Step 5c: Skipping rosbag recording (no bag_path provided)", flush=True)
+
     # STEP 6: Launch navigation nodes (like tmuxp pane 3 second command)
     nav_cmd = [
         'roslaunch',
         'autonomous_flight',
-        'intent_mpc_dynus_nav.launch'
+        'intent_mpc_dynus_nav.launch',
+        f'acceleration_weight:={acceleration_weight}',
+        f'max_vel:={max_vel}',
+        f'max_acc:={max_acc}'
     ]
 
-    print(f"Step 6: Launching navigation...", flush=True)
+    print(f"Step 6: Launching navigation (max_vel={max_vel}, max_acc={max_acc}, acceleration_weight={acceleration_weight})...", flush=True)
     print(f"  Command: {' '.join(nav_cmd)}", flush=True)
 
+    nav_log = open(log_dir / 'navigation.log', 'w')
     nav_proc = subprocess.Popen(nav_cmd, preexec_fn=os.setsid,
-                                stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+                                stdout=nav_log, stderr=subprocess.STDOUT)
 
-    # Store nav_proc so we can kill it later
+    # Store nav_proc and rosbag_proc so we can kill them later
     gazebo_proc.nav_proc = nav_proc
+    gazebo_proc.rosbag_proc = rosbag_proc
 
     # Wait for navigation to initialize
     print("Step 7: Waiting for navigation to initialize (5s)...", flush=True)
     time.sleep(5)
 
-    print("All systems launched successfully", flush=True)
+    print(f"All systems launched successfully", flush=True)
+    print(f"  Navigation log: {log_dir / 'navigation.log'}", flush=True)
+    print(f"  Gazebo log: {log_dir / 'gazebo.log'}", flush=True)
     return gazebo_proc
 
 
 def run_trial(trial_id: int, num_obstacles: int, dynamic_ratio: float, seed: int,
-              timeout: float = 120.0, visualize: bool = False, output_dir: FilePath = None) -> BenchmarkMetrics:
+              timeout: float = 100.0, visualize: bool = False, output_dir: FilePath = None,
+              acceleration_weight: float = 10.0, max_vel: float = 5.0, max_acc: float = 20.0,
+              difficulty: str = "") -> BenchmarkMetrics:
     """Run a single benchmark trial"""
 
     print("="*80, flush=True)
     print(f"TRIAL {trial_id}: seed={seed}, obstacles={num_obstacles}, ratio={dynamic_ratio}", flush=True)
     print("="*80, flush=True)
+
+    # Set default output directory early (needed for log files)
+    if output_dir is None:
+        output_dir = FilePath('/root/ip-mpc_ws/src/Intent-MPC/data')
+    output_dir.mkdir(parents=True, exist_ok=True)
 
     # PRE-TRIAL CLEANUP: Kill any lingering processes from previous trials
     # Keep roscore alive - rospy can only init_node once per Python process
@@ -788,8 +908,23 @@ def run_trial(trial_id: int, num_obstacles: int, dynamic_ratio: float, seed: int
     else:
         print(f"Trial {trial_id}: First trial, skipping pre-cleanup", flush=True)
 
+    # Prepare rosbag recording parameters (bag starts INSIDE launch, before navigation)
+    bag_dir = output_dir / "bags"
+    bag_path = bag_dir / f"trial_{trial_id}.bag"
+
+    # Topics to record for collision checking
+    topics_to_record = [
+        '/CERLAB/quadcopter/odom',           # Drone odometry (actual position for path length)
+        '/autonomous_flight/target_state',   # Commanded pos/vel/acc (like DYNUS /NX01/goal)
+        '/dynus/model_states',               # DYNUS obstacle positions (NOT /gazebo/model_states!)
+        '/mpcNavigation/mpc_trajectory',     # MPC trajectory
+        '/mpcNavigation/mpc_compute_time',   # MPC computation time per solve
+    ]
+
     # FIRST: Launch simulation and navigation (this starts roscore)
-    sim_nav_proc = launch_simulation_and_navigation(num_obstacles, dynamic_ratio, seed, visualize)
+    # Rosbag recording starts INSIDE this function, BEFORE navigation launch,
+    # so that early trajectory data is captured from the very beginning.
+    sim_nav_proc = launch_simulation_and_navigation(num_obstacles, dynamic_ratio, seed, visualize, acceleration_weight, max_vel, max_acc, output_dir, bag_path=bag_path, bag_topics=topics_to_record)
 
     if sim_nav_proc is None:
         print(f"ERROR: Failed to launch simulation for trial {trial_id}", flush=True)
@@ -805,24 +940,13 @@ def run_trial(trial_id: int, num_obstacles: int, dynamic_ratio: float, seed: int
 
     # THIRD: Create monitor (which subscribes to topics)
     monitor = BenchmarkMonitor(trial_id, num_obstacles, dynamic_ratio, seed)
+    monitor.metrics.acceleration_weight = acceleration_weight
+    monitor.metrics.max_vel = max_vel
+    monitor.metrics.difficulty = difficulty
 
-    # FOURTH: Start rosbag recording for post-processing
-    if output_dir is None:
-        output_dir = FilePath('/root/ip-mpc_ws/src/Intent-MPC/data')
-
-    bag_dir = output_dir / "bags"
-    bag_path = bag_dir / f"trial_{trial_id}.bag"
-
-    # Topics to record for collision checking
-    topics_to_record = [
-        '/CERLAB/quadcopter/odom',           # Drone odometry (actual position for path length)
-        '/autonomous_flight/target_state',   # Commanded pos/vel/acc (like DYNUS /NX01/goal)
-        '/dynus/model_states',               # DYNUS obstacle positions (NOT /gazebo/model_states!)
-        '/mpcNavigation/mpc_trajectory',     # MPC trajectory
-        '/mpcNavigation/mpc_compute_time',   # MPC computation time per solve
-    ]
-
-    rosbag_proc = start_rosbag_recording(bag_path, topics_to_record)
+    # Rosbag process was started inside launch_simulation_and_navigation()
+    # Retrieve the handle for cleanup later
+    rosbag_proc = getattr(sim_nav_proc, 'rosbag_proc', None)
 
     # Monitor trial
     start_time = time.time()
@@ -870,12 +994,28 @@ def run_trial(trial_id: int, num_obstacles: int, dynamic_ratio: float, seed: int
     finally:
         # Stop rosbag recording first
         print(f"Trial {trial_id}: Stopping rosbag recording...")
-        try:
-            rosbag_proc.send_signal(signal.SIGINT)  # Graceful stop
-            rosbag_proc.wait(timeout=5)
-            print(f"Trial {trial_id}: Rosbag saved to {bag_path}")
-        except:
-            rosbag_proc.kill()
+        if rosbag_proc is not None:
+            try:
+                rosbag_proc.send_signal(signal.SIGINT)  # Graceful stop
+                rosbag_proc.wait(timeout=5)
+                print(f"Trial {trial_id}: Rosbag saved to {bag_path}")
+            except:
+                rosbag_proc.kill()
+        else:
+            print(f"Trial {trial_id}: No rosbag process to stop")
+
+        # Print tail of navigation log (MPC diagnostics)
+        nav_log_path = output_dir / 'navigation.log'
+        if nav_log_path.exists():
+            print(f"\n--- Navigation log (last 30 lines) ---", flush=True)
+            try:
+                with open(nav_log_path, 'r') as f:
+                    lines = f.readlines()
+                    for line in lines[-30:]:
+                        print(f"  {line.rstrip()}", flush=True)
+            except Exception as e:
+                print(f"  (could not read log: {e})", flush=True)
+            print(f"--- End navigation log ---\n", flush=True)
 
         # Compute final metrics
         print(f"Trial {trial_id}: Computing metrics...")
@@ -891,6 +1031,7 @@ def run_trial(trial_id: int, num_obstacles: int, dynamic_ratio: float, seed: int
             if hasattr(monitor, 'target_sub'):
                 monitor.target_sub.unregister()
             monitor.model_states_sub.unregister()
+            monitor.mpc_compute_time_sub.unregister()
         except Exception as e:
             print(f"  Warning: Failed to unregister subscribers: {e}")
 
@@ -1108,11 +1249,20 @@ def main():
                         help='Ratio of dynamic obstacles (default: 0.65, matching DYNUS benchmark)')
     parser.add_argument('--seed-start', type=int, default=0,
                         help='Starting seed value (default: 0)')
-    parser.add_argument('--timeout', type=float, default=120.0,
-                        help='Timeout per trial in seconds (default: 120)')
+    parser.add_argument('--timeout', type=float, default=100.0,
+                        help='Timeout per trial in seconds (default: 100)')
     parser.add_argument('--output-dir', type=str,
                         default='/root/ip-mpc_ws/src/Intent-MPC/data',
                         help='Output directory for results')
+    parser.add_argument('--acceleration-weight', type=float, default=10.0,
+                        help='MPC acceleration weight (default: 10.0)')
+    parser.add_argument('--max-vel', type=float, default=5.0,
+                        help='Maximum velocity in m/s (default: 5.0)')
+    parser.add_argument('--max-acc', type=float, default=20.0,
+                        help='Maximum acceleration in m/s^2 (default: 20.0)')
+    parser.add_argument('--difficulty', type=str, default=None,
+                        choices=['easy', 'medium', 'hard'],
+                        help='Difficulty level: easy (50 obs), medium (100 obs), hard (200 obs). Overrides --num-obstacles.')
     parser.add_argument('--visualize', '--viz', '--rviz', action='store_true',
                         help='Launch with RViz visualization (default: headless)')
     parser.add_argument('--debug', action='store_true',
@@ -1128,20 +1278,33 @@ def main():
     # Handle visualization flag
     visualize = args.visualize
 
+    # Difficulty mapping: override num_obstacles if difficulty is set
+    difficulty_map = {'easy': 50, 'medium': 100, 'hard': 200}
+    difficulty = args.difficulty
+    if difficulty is not None:
+        args.num_obstacles = difficulty_map[difficulty]
+    else:
+        # Infer difficulty from num_obstacles
+        reverse_map = {v: k for k, v in difficulty_map.items()}
+        difficulty = reverse_map.get(args.num_obstacles, f'obs{args.num_obstacles}')
+
     # Create output directory with timestamp
     timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    output_dir = FilePath(args.output_dir) / f"benchmark_{timestamp}"
+    output_dir = FilePath(args.output_dir) / f"{difficulty}_benchmark_{timestamp}"
     output_dir.mkdir(parents=True, exist_ok=True)
 
     print("="*80)
     print("INTENT-MPC BENCHMARK RUNNER")
     print("="*80)
     print(f"Configuration:")
+    print(f"  Difficulty: {difficulty} ({args.num_obstacles} obstacles)")
     print(f"  Trials: {args.num_trials}")
-    print(f"  Obstacles: {args.num_obstacles}")
     print(f"  Dynamic ratio: {args.dynamic_ratio}")
     print(f"  Seed range: {args.seed_start} to {args.seed_start + args.num_trials - 1}")
     print(f"  Timeout: {args.timeout}s")
+    print(f"  Max velocity: {args.max_vel} m/s")
+    print(f"  Max acceleration: {args.max_acc} m/s^2")
+    print(f"  Acceleration weight: {args.acceleration_weight}")
     print(f"  Output: {output_dir}")
     print(f"  Visualize: {visualize}")
     print("="*80)
@@ -1166,7 +1329,11 @@ def main():
                 seed=seed,
                 timeout=args.timeout,
                 visualize=visualize,
-                output_dir=output_dir
+                output_dir=output_dir,
+                acceleration_weight=args.acceleration_weight,
+                max_vel=args.max_vel,
+                max_acc=args.max_acc,
+                difficulty=difficulty,
             )
 
             metrics_list.append(metrics)
